@@ -4,7 +4,7 @@ defmodule BedrockRaft.MixProject do
   def project do
     [
       app: :bedrock_raft,
-      version: "0.9.6",
+      version: "0.9.7",
       elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -13,7 +13,12 @@ defmodule BedrockRaft.MixProject do
         coveralls: :test,
         "coveralls.json": :test
       ],
-      elixirc_paths: elixirc_paths(Mix.env())
+      elixirc_paths: elixirc_paths(Mix.env()),
+      description: "An implementation of the RAFT consensus algorithm in Elixir that doesn't force opinions. Bake the protocol into your own GenServers, send messages and manage logs how you like.",
+      source_url: "https://github.com/bedrock-kv/raft",
+      homepage_url: "https://github.com/bedrock-kv/raft",
+      package: package(),
+      docs: docs()
     ]
   end
 
@@ -35,6 +40,7 @@ defmodule BedrockRaft.MixProject do
       [
         {:credo, "~> 1.6", only: [:dev, :test], runtime: false},
         {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+        {:ex_doc, "~> 0.34", only: :dev, runtime: false},
         {:mix_test_watch, "~> 1.0", only: [:dev, :test], runtime: false},
         {:mox, "~> 1.1", only: :test},
         {:excoveralls, "~> 0.18", only: :test}
@@ -43,4 +49,22 @@ defmodule BedrockRaft.MixProject do
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
+
+  defp package do
+    [
+      licenses: ["MIT"],
+      links: %{
+        "GitHub" => "https://github.com/bedrock-kv/raft",
+        "Changelog" => "https://github.com/bedrock-kv/raft/blob/main/CHANGELOG.md"
+      },
+      files: ~w(lib .formatter.exs mix.exs README.md LICENSE CHANGELOG.md)
+    ]
+  end
+
+  defp docs do
+    [
+      main: "Bedrock.Raft",
+      extras: ["README.md", "CHANGELOG.md"]
+    ]
+  end
 end
