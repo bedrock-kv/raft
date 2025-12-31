@@ -14,7 +14,8 @@ defmodule BedrockRaft.MixProject do
         "coveralls.json": :test
       ],
       elixirc_paths: elixirc_paths(Mix.env()),
-      description: "An implementation of the RAFT consensus algorithm in Elixir that doesn't force opinions. Bake the protocol into your own GenServers, send messages and manage logs how you like.",
+      description:
+        "An implementation of the RAFT consensus algorithm in Elixir that doesn't force opinions. Bake the protocol into your own GenServers, send messages and manage logs how you like.",
       source_url: "https://github.com/bedrock-kv/raft",
       homepage_url: "https://github.com/bedrock-kv/raft",
       package: package(),
