@@ -28,6 +28,9 @@ erl_crash.dump
 # Ignore package tarball (built via "mix hex.build").
 bedrock-raft*.tar
 
+# Dialyzer PLTs (see dialyzer/0 in mix.exs).
+/plts/
+
 # Temporary files, for example, from tests.
 /tmp/
 

@@ -4,7 +4,10 @@ on:
   push:
     branches: [ "main", "develop" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "develop" ]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 7 * * 1"
 
 env:
   MIX_ENV: test
@@ -18,10 +21,23 @@ jobs:
     runs-on: ubuntu-24.04
     name: Test on OTP ${{matrix.otp}} / Elixir ${{matrix.elixir}}
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - elixir: "1.18.4"
-            otp: "27.2"
+          # Oldest supported toolchain (mix.exs requires ~> 1.17)
+          - elixir: "1.17.3"
+            otp: "27.3"
+          - elixir: "1.19.5"
+            otp: "28.3"
+          # Newest toolchain; matches local development. The lint cell runs
+          # the version-independent checks (format, audit, credo) once.
+          # Exactly one cell reports coverage: coveralls closes a PR's build
+          # on the first non-parallel upload, so a second reporting cell
+          # would 422 whenever finish times diverge (e.g. uneven caches)
+          - elixir: "1.20.3"
+            otp: "29.0"
+            coverage: true
+            lint: true
     steps:
 
     - name: Checkout code
@@ -59,27 +75,29 @@ jobs:
       run: mix compile --warnings-as-errors
 
     - name: Check Formatting
+      if: matrix.lint
       run: mix format --check-formatted
 
+    # One cell is enough: the advisory database is the same everywhere.
+    - name: Audit dependencies for known vulnerabilities
+      if: matrix.lint
+      run: mix deps.audit
+
     - name: Credo
+      if: matrix.lint
       run: mix credo --strict
 
-    # Define how to cache the `priv/plts` directory. After the first run,
+    # Define how to cache the `plts` directory. After the first run,
     # this speeds up dialyzer runs a lot.
     - name: Cache PLTs
       id: cache-plts
       uses: actions/cache@v3
-      env:
-        cache-name: cache-plts
       with:
-        path: priv/plts
-        key: ${{ runner.os }}-mix-${{ env.cache-name }}-${{ hashFiles('**/mix.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-mix-${{ env.cache-name }}-
-          ${{ runner.os }}-mix-
+        path: plts
+        key: ${{ runner.os }}-${{ matrix.elixir }}-${{ matrix.otp }}-plts-v3-${{ hashFiles('**/mix.lock') }}
 
     - name: Dialyzer
-      run: mix dialyzer --halt-exit-status
+      run: mix dialyzer
 
     - name: Run tests
-      run: mix coveralls.github
+      run: ${{ (github.event_name != 'schedule' && matrix.coverage) && 'mix coveralls.github' || 'mix test --warnings-as-errors' }}

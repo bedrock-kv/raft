@@ -9,17 +9,25 @@ defmodule BedrockRaft.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       test_coverage: [tool: ExCoveralls],
-      preferred_cli_env: [
-        coveralls: :test,
-        "coveralls.json": :test
-      ],
       elixirc_paths: elixirc_paths(Mix.env()),
+      elixirc_options: [warnings_as_errors: true],
+      dialyzer: dialyzer(),
       description:
         "An implementation of the RAFT consensus algorithm in Elixir that doesn't force opinions. Bake the protocol into your own GenServers, send messages and manage logs how you like.",
       source_url: "https://github.com/bedrock-kv/raft",
       homepage_url: "https://github.com/bedrock-kv/raft",
       package: package(),
       docs: docs()
+    ]
+  end
+
+  def cli do
+    [
+      preferred_envs: [
+        coveralls: :test,
+        "coveralls.json": :test,
+        dialyzer: :dev
+      ]
     ]
   end
 
@@ -31,7 +39,7 @@ defmodule BedrockRaft.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:telemetry, "~> 1.3.0"}
+      {:telemetry, "~> 1.3"}
     ]
     |> add_deps_for_dev_and_test()
   end
@@ -39,13 +47,25 @@ defmodule BedrockRaft.MixProject do
   def add_deps_for_dev_and_test(deps) do
     deps ++
       [
-        {:credo, "~> 1.6", only: [:dev, :test], runtime: false},
-        {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
-        {:ex_doc, "~> 0.34", only: :dev, runtime: false},
+        {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+        {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
+        {:dialyxir, "~> 1.4.7", only: [:dev, :test], runtime: false},
+        {:ex_doc, "~> 0.39", only: :dev, runtime: false, warn_if_outdated: true},
         {:mix_test_watch, "~> 1.0", only: [:dev, :test], runtime: false},
         {:mox, "~> 1.1", only: :test},
         {:excoveralls, "~> 0.18", only: :test}
       ]
+  end
+
+  defp dialyzer do
+    [
+      plt_core_path: "plts",
+      plt_file: {:no_warn, "plts/dialyzer.plt"},
+      plt_add_apps: [:ex_unit, :mix],
+      # Disable opaque type checks due to OTP 28 issues with structs containing
+      # MapSet/queue. See: https://github.com/elixir-lang/elixir/issues/14576
+      flags: [:no_opaque]
+    ]
   end
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
