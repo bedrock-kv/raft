@@ -31,7 +31,7 @@ defmodule BedrockRaft.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:telemetry, "~> 1.3.0"}
+      {:telemetry, "~> 1.3"}
     ]
     |> add_deps_for_dev_and_test()
   end
