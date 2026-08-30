@@ -168,27 +168,28 @@ defmodule Bedrock.Raft.Mode.Leader do
            ]) do
       track_transaction_added(t.term, new_txn_id)
 
-      t = %{t | log: log}
-
-      # Handle single-node consensus immediately
-      if t.quorum == 0 do
-        # In single-node clusters, the leader itself constitutes the entire cluster
-        # so we can immediately commit the transaction and trigger consensus
-        case Log.commit_up_to(t.log, new_txn_id) do
-          {:ok, committed_log} ->
-            track_consensus_reached(new_txn_id)
-            :ok = t.interface.consensus_reached(committed_log, new_txn_id, :latest)
-            {:ok, %{t | log: committed_log}, new_txn_id}
-
-          :unchanged ->
-            {:ok, t, new_txn_id}
-        end
-      else
-        # Multi-node clusters: send append_entries to followers and wait for acks
-        t = send_append_entries_to_followers(t, t.peers)
-        {:ok, t, new_txn_id}
-      end
+      replicate_transaction(%{t | log: log}, new_txn_id)
     end
+  end
+
+  # In single-node clusters, the leader itself constitutes the entire cluster
+  # so we can immediately commit the transaction and trigger consensus.
+  defp replicate_transaction(%{quorum: 0} = t, new_txn_id) do
+    case Log.commit_up_to(t.log, new_txn_id) do
+      {:ok, committed_log} ->
+        track_consensus_reached(new_txn_id)
+        :ok = t.interface.consensus_reached(committed_log, new_txn_id, :latest)
+        {:ok, %{t | log: committed_log}, new_txn_id}
+
+      :unchanged ->
+        {:ok, t, new_txn_id}
+    end
+  end
+
+  # Multi-node clusters: send append_entries to followers and wait for acks.
+  defp replicate_transaction(t, new_txn_id) do
+    t = send_append_entries_to_followers(t, t.peers)
+    {:ok, t, new_txn_id}
   end
 
   @doc """
