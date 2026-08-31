@@ -36,3 +36,6 @@ bedrock-raft*.tar
 
 # MacOS cruft
 .DS_Store
+
+# Claude Code project files are local-only (mirrors ../bedrock)
+.claude/*
