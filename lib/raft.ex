@@ -44,7 +44,8 @@ defmodule Bedrock.Raft do
           mode: Follower.t() | Candidate.t() | Leader.t() | nil,
           peers: [peer()],
           quorum: pos_integer(),
-          interface: module()
+          interface: module(),
+          append_entries_batch_size: pos_integer()
         }
   defstruct ~w[
       me
@@ -52,18 +53,30 @@ defmodule Bedrock.Raft do
       peers
       quorum
       interface
+      append_entries_batch_size
     ]a
 
   @doc """
   Create a new RAFT consensus protocol instance.
+
+  Options:
+
+    * `:append_entries_batch_size` - the maximum number of transactions the
+      leader puts into a single AppendEntries request (default
+      `#{Leader.default_append_entries_batch_size()}`). Larger batches
+      amortize round trips while a follower is catching up, at the cost of
+      larger messages; the batch size also bounds the work a single request
+      imposes on both the leader (log read) and the follower
+      (append/reconcile). Must be a positive integer.
   """
   @spec new(
           me :: peer(),
           peers :: [peer()],
           log :: Log.t(),
-          interface :: module()
+          interface :: module(),
+          opts :: [append_entries_batch_size: pos_integer()]
         ) :: t()
-  def new(me, peers, log, interface) do
+  def new(me, peers, log, interface, opts \\ []) do
     # Assume that we'll always vote for ourselves, so majority - 1.
     quorum = determine_majority([me | peers]) - 1
 
@@ -74,7 +87,11 @@ defmodule Bedrock.Raft do
       me: me,
       peers: peers,
       quorum: quorum,
-      interface: interface
+      interface: interface,
+      append_entries_batch_size:
+        opts
+        |> Keyword.get(:append_entries_batch_size, Leader.default_append_entries_batch_size())
+        |> validate_append_entries_batch_size!()
     }
     |> then(fn t ->
       # All nodes start as followers and must go through election process
@@ -344,7 +361,13 @@ defmodule Bedrock.Raft do
   defp become_leader(t, term, log) do
     track_became_leader(term, t.quorum, t.peers)
 
-    %{t | mode: Leader.new(term, t.quorum, t.peers, log, t.interface)}
+    %{
+      t
+      | mode:
+          Leader.new(term, t.quorum, t.peers, log, t.interface,
+            append_entries_batch_size: t.append_entries_batch_size
+          )
+    }
     |> notify_change_in_leadership(leadership(t))
   end
 
@@ -353,6 +376,14 @@ defmodule Bedrock.Raft do
   defp cancel_mode_timer(%{mode: mode} = t) do
     mode.cancel_timer_fn.()
     %{t | mode: %{mode | cancel_timer_fn: nil}}
+  end
+
+  @spec validate_append_entries_batch_size!(term()) :: pos_integer()
+  defp validate_append_entries_batch_size!(n) when is_integer(n) and n > 0, do: n
+
+  defp validate_append_entries_batch_size!(other) do
+    raise ArgumentError,
+          ":append_entries_batch_size must be a positive integer, got: #{inspect(other)}"
   end
 
   @spec next_term(t()) :: Raft.election_term()

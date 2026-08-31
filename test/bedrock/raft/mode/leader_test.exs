@@ -879,4 +879,53 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
       assert FollowerTracking.match_transaction_id(leader.follower_tracking, :peer_1) == {2, 30}
     end
   end
+
+  describe "append_entries_batch_size" do
+    test "defaults to 10" do
+      stub(MockInterface, :timestamp_in_ms, fn -> 1000 end)
+      expect(MockInterface, :timer, fn :heartbeat -> &mock_cancel/0 end)
+
+      leader = Leader.new(2, 1, [:peer_1], InMemoryLog.new(), MockInterface)
+
+      assert leader.append_entries_batch_size == 10
+      assert Leader.default_append_entries_batch_size() == 10
+    end
+
+    test "a custom batch size bounds catch-up batches and continues on success" do
+      log = InMemoryLog.new()
+      t0 = Log.initial_transaction_id(log)
+
+      {:ok, log} = Log.append_transactions(log, t0, Enum.map(1..7, fn i -> {{2, i}, i} end))
+
+      stub(MockInterface, :timestamp_in_ms, fn -> 1000 end)
+      expect(MockInterface, :timer, fn :heartbeat -> &mock_cancel/0 end)
+
+      leader = Leader.new(2, 1, [:peer_1], log, MockInterface, append_entries_batch_size: 3)
+
+      assert leader.append_entries_batch_size == 3
+
+      # A rejection whose hint points at the log start repositions the cursor
+      # and sends the first batch: exactly 3 entries.
+      expect(MockInterface, :send_event, fn :peer_1,
+                                            {:append_entries, 2, ^t0,
+                                             [{{2, 1}, 1}, {{2, 2}, 2}, {{2, 3}, 3}], ^t0} ->
+        :ok
+      end)
+
+      {:ok, leader} = Leader.append_entries_ack_received(leader, 2, false, {2, 7}, t0, :peer_1)
+
+      # Success for that batch commits (quorum of one follower) and continues
+      # with the next batch of 3 from the advanced cursor.
+      expect(MockInterface, :consensus_reached, fn _, {2, 3}, :behind -> :ok end)
+
+      expect(MockInterface, :send_event, fn :peer_1,
+                                            {:append_entries, 2, {2, 3},
+                                             [{{2, 4}, 4}, {{2, 5}, 5}, {{2, 6}, 6}], {2, 3}} ->
+        :ok
+      end)
+
+      {:ok, _leader} =
+        Leader.append_entries_ack_received(leader, 2, true, {2, 3}, {2, 3}, :peer_1)
+    end
+  end
 end

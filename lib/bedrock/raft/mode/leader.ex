@@ -80,7 +80,8 @@ defmodule Bedrock.Raft.Mode.Leader do
           follower_tracking: FollowerTracking.t(),
           cancel_timer_fn: function() | nil,
           log: Log.t(),
-          interface: module()
+          interface: module(),
+          append_entries_batch_size: pos_integer()
         }
   defstruct [
     :peers,
@@ -90,22 +91,42 @@ defmodule Bedrock.Raft.Mode.Leader do
     :follower_tracking,
     :cancel_timer_fn,
     :log,
-    :interface
+    :interface,
+    :append_entries_batch_size
   ]
+
+  @default_append_entries_batch_size 10
+
+  @doc """
+  The default maximum number of transactions carried by a single
+  AppendEntries request.
+  """
+  @spec default_append_entries_batch_size() :: pos_integer()
+  def default_append_entries_batch_size, do: @default_append_entries_batch_size
 
   @doc """
   Create a new leader. We'll send notices to all the peers, and schedule the
   timer to tick.
+
+  Options:
+
+    * `:append_entries_batch_size` - the maximum number of transactions
+      carried by a single AppendEntries request (default
+      `#{@default_append_entries_batch_size}`). Larger batches amortize
+      round trips while a follower is catching up, at the cost of larger
+      messages; the batch size also bounds the work a single request imposes
+      on both the leader (log read) and the follower (append/reconcile).
   """
   @spec new(
           Raft.election_term(),
           Raft.quorum(),
           [Raft.peer()],
           Log.t(),
-          interface :: module()
+          interface :: module(),
+          opts :: [append_entries_batch_size: pos_integer()]
         ) ::
           t()
-  def new(term, quorum, peers, log, interface) do
+  def new(term, quorum, peers, log, interface, opts \\ []) do
     # Initialize id_sequence to the index of the newest transaction in the log
     # so we don't generate conflicting transaction IDs
     newest_transaction_id = Log.newest_transaction_id(log)
@@ -123,7 +144,9 @@ defmodule Bedrock.Raft.Mode.Leader do
           timestamp_fn: &interface.timestamp_in_ms/0
         ),
       log: log,
-      interface: interface
+      interface: interface,
+      append_entries_batch_size:
+        Keyword.get(opts, :append_entries_batch_size, @default_append_entries_batch_size)
     }
     |> set_timer()
   end
@@ -455,7 +478,8 @@ defmodule Bedrock.Raft.Mode.Leader do
          prev_transaction_id,
          newest_safe_transaction_id
        ) do
-    transactions = Log.transactions_from(t.log, prev_transaction_id, :newest, 10)
+    transactions =
+      Log.transactions_from(t.log, prev_transaction_id, :newest, t.append_entries_batch_size)
 
     # Pipelining: move the send cursor past what this request carries so the
     # next send continues from here instead of re-sending the same window.

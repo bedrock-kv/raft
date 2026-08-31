@@ -18,8 +18,8 @@ defmodule Sim do
 
   def clock_advance(ms), do: Process.put(:sim_clock, Process.get(:sim_clock, 1000) + ms)
 
-  def new_cluster(names \\ [:a, :b, :c]) do
-    Map.new(names, fn n -> {n, Raft.new(n, names -- [n], InMemoryLog.new(), Iface)} end)
+  def new_cluster(names \\ [:a, :b, :c], opts \\ []) do
+    Map.new(names, fn n -> {n, Raft.new(n, names -- [n], InMemoryLog.new(), Iface, opts)} end)
   end
 
   def drain(from, acc \\ []) do
@@ -102,8 +102,8 @@ defmodule Sim do
     end
   end
 
-  def elect(leader \\ :a) do
-    cluster = new_cluster()
+  def elect(leader \\ :a, opts \\ []) do
+    cluster = new_cluster([:a, :b, :c], opts)
     {cluster, outs} = handle(cluster, leader, :election, :timer)
     {cluster, _} = pump(cluster, outs)
     cluster
@@ -174,9 +174,9 @@ defmodule Sim do
   end
 
   # Build: :a leader, :c partitioned during n adds (lockstep with :b).
-  def build_partitioned(n) do
+  def build_partitioned(n, opts \\ []) do
     drop_c = fn {to, from, _} -> to == :c or from == :c end
-    cluster = elect()
+    cluster = elect(:a, opts)
 
     Enum.reduce(1..n, cluster, fn i, c ->
       {c, outs} = add(c, :a, {:tx, i})
@@ -186,13 +186,15 @@ defmodule Sim do
   end
 
   # E3a: heal and catch :c up via heartbeat (leader cursor for :c is at 0 -> forward-only).
-  def e3a(n) do
-    cluster = build_partitioned(n)
+  def e3a(n, opts \\ []) do
+    cluster = build_partitioned(n, opts)
     clock_advance(1000)
     {cluster, outs} = handle(cluster, :a, :heartbeat, :timer)
     {us, {cluster, stats}} = :timer.tc(fn -> pump(cluster, outs, track_to: :c) end)
 
-    IO.puts("E3a forward catch-up N=#{n}: AE_to_c=#{stats.ae_to} entries_to_c=#{stats.entries_to} time=#{div(us, 1000)}ms committed_c=#{committed(cluster, :c)}")
+    batch = Keyword.get(opts, :append_entries_batch_size, 10)
+
+    IO.puts("E3a forward catch-up N=#{n} batch=#{batch}: AE_to_c=#{stats.ae_to} entries_to_c=#{stats.entries_to} time=#{div(us, 1000)}ms committed_c=#{committed(cluster, :c)}")
   end
 
   # E3b: re-elect :b (fresh cursor = newest), then heal :c -> full backtrack.
@@ -239,6 +241,7 @@ case System.argv() do
   ["e1"] -> Sim.e1(100)
   ["e2"] -> for d <- [2, 5, 10, 20], do: Sim.e2(2000, d, 1000)
   ["e3a"] -> for n <- [200, 400, 800, 1600], do: Sim.e3a(n)
+  ["e3a", batch] -> Sim.e3a(1600, append_entries_batch_size: String.to_integer(batch))
   ["e3b"] -> for n <- [100, 200, 400, 800, 1600], do: Sim.e3b(n)
   ["e4"] -> Sim.e4(1000, 6)
   _ -> IO.puts("usage: mix run bench/sim.exs <e1|e2|e3a|e3b|e4>")

@@ -1132,4 +1132,76 @@ defmodule Bedrock.RaftTest do
       assert result == p
     end
   end
+
+  describe "append_entries_batch_size option" do
+    test "invalid values raise ArgumentError" do
+      for bad <- [0, -1, :lots, "10"] do
+        assert_raise ArgumentError, ~r/append_entries_batch_size/, fn ->
+          Raft.new(:a, [:b], InMemoryLog.new(), MockInterface, append_entries_batch_size: bad)
+        end
+      end
+    end
+
+    test "the default remains 10 when the option is omitted" do
+      log = InMemoryLog.new()
+      t0 = Log.initial_transaction_id(log)
+
+      expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
+      expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
+      expect(MockInterface, :send_event, fn :b, {:request_vote, 1, ^t0} -> :ok end)
+      expect(MockInterface, :timer, fn :heartbeat -> &mock_timer_cancel/0 end)
+      expect(MockInterface, :leadership_changed, fn {:a, 1} -> :ok end)
+
+      p =
+        Raft.new(:a, [:b], log, MockInterface)
+        |> Raft.handle_event(:election, :timer)
+        |> Raft.handle_event({:vote, 1}, :b)
+
+      assert Raft.am_i_the_leader?(p)
+      assert p.mode.append_entries_batch_size == 10
+    end
+
+    test "the configured size survives step-down and re-election" do
+      log = InMemoryLog.new()
+      t0 = Log.initial_transaction_id(log)
+
+      expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
+      expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
+      expect(MockInterface, :send_event, fn :b, {:request_vote, 1, ^t0} -> :ok end)
+      expect(MockInterface, :send_event, fn :c, {:request_vote, 1, ^t0} -> :ok end)
+      expect(MockInterface, :timer, fn :heartbeat -> &mock_timer_cancel/0 end)
+      expect(MockInterface, :leadership_changed, fn {:a, 1} -> :ok end)
+
+      p =
+        Raft.new(:a, [:b, :c], log, MockInterface, append_entries_batch_size: 3)
+        |> Raft.handle_event(:election, :timer)
+        |> Raft.handle_event({:vote, 1}, :b)
+
+      assert Raft.am_i_the_leader?(p)
+      assert p.mode.append_entries_batch_size == 3
+
+      # A higher-term ack forces a step-down to follower...
+      expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
+      expect(MockInterface, :leadership_changed, fn {:undecided, 2} -> :ok end)
+
+      p = p |> Raft.handle_event({:append_entries_ack, 2, true, t0, t0}, :b)
+
+      refute Raft.am_i_the_leader?(p)
+
+      # ...and a later re-election in term 3 keeps the configured batch size.
+      expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
+      expect(MockInterface, :send_event, fn :b, {:request_vote, 3, ^t0} -> :ok end)
+      expect(MockInterface, :send_event, fn :c, {:request_vote, 3, ^t0} -> :ok end)
+      expect(MockInterface, :timer, fn :heartbeat -> &mock_timer_cancel/0 end)
+      expect(MockInterface, :leadership_changed, fn {:a, 3} -> :ok end)
+
+      p =
+        p
+        |> Raft.handle_event(:election, :timer)
+        |> Raft.handle_event({:vote, 3}, :b)
+
+      assert Raft.am_i_the_leader?(p)
+      assert p.mode.append_entries_batch_size == 3
+    end
+  end
 end

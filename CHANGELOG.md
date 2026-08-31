@@ -6,6 +6,11 @@
 - Development benchmarks under `bench/`: an in-process three-node cluster
   simulator (`bench/sim.exs`) and log/leader micro-benchmarks
   (`bench/micro.exs`) used to quantify replication behavior.
+- `Bedrock.Raft.new/5` accepts an `:append_entries_batch_size` option that
+  bounds how many transactions the leader puts into a single AppendEntries
+  request. The default remains 10, so behavior is unchanged unless the option
+  is given. Larger batches amortize round trips while a follower is catching
+  up, at the cost of larger messages.
 
 ### Changed
 - `Bedrock.Raft.Log` implementations must now provide `voted_for/1` and
