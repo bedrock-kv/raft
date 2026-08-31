@@ -67,6 +67,23 @@ defmodule Bedrock.Raft.Mode.Leader.FollowerTrackingTest do
     assert FollowerTracking.newest_safe_transaction_id(t, 3) == 1
   end
 
+  test "advance_send_cursor/3 moves the cursor forwards without touching the timestamp", %{
+    t: t
+  } do
+    FollowerTracking.advance_send_cursor(t, :f1, 4)
+    assert [{:f1, 4, 0, 1000}] = :ets.lookup(t.table, :f1)
+
+    FollowerTracking.advance_send_cursor(t, :f1, 2)
+    assert [{:f1, 4, 0, 1000}] = :ets.lookup(t.table, :f1)
+  end
+
+  test "advance_send_cursor/3 leaves the follower eligible for heartbeat probes", %{t: t} do
+    FollowerTracking.advance_send_cursor(t, :f1, 9)
+
+    expect(MockTimer, :timestamp, fn -> 1100 end)
+    assert :f1 in FollowerTracking.followers_not_seen_in(t, 50)
+  end
+
   test "record_rejection/3 backtracks only the send cursor", %{t: t} do
     expect(MockTimer, :timestamp, fn -> 1060 end)
     FollowerTracking.record_success(t, :f1, 3)

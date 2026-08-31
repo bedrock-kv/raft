@@ -760,17 +760,15 @@ defmodule Bedrock.RaftTest do
       assert_receive ^t1
 
       # We add another transaction (t2) to our log, and send it to :b and :c.
+      # Replication is pipelined: the send cursor already advanced past t1, so
+      # this request carries only t2.
 
-      expect(MockInterface, :send_event, fn :b,
-                                            {:append_entries, 1, ^t0,
-                                             [{^t1, :data1}, {t2, :data2}], ^t0} ->
+      expect(MockInterface, :send_event, fn :b, {:append_entries, 1, ^t1, [{t2, :data2}], ^t0} ->
         send(self(), t2)
         :ok
       end)
 
-      expect(MockInterface, :send_event, fn :c,
-                                            {:append_entries, 1, ^t0,
-                                             [{^t1, :data1}, {t2, :data2}], ^t0} ->
+      expect(MockInterface, :send_event, fn :c, {:append_entries, 1, ^t1, [{t2, :data2}], ^t0} ->
         send(self(), t2)
         :ok
       end)
@@ -781,22 +779,20 @@ defmodule Bedrock.RaftTest do
       assert_receive ^t2
 
       # Our heartbeat timer expires, and we send out a heartbeat to :b and :c.
-      # We note that the newest committed transaction is still t0
+      # We note that the newest committed transaction is still t0. Everything
+      # through t2 is already in flight, so the heartbeat is an empty probe
+      # from the send cursor.
 
       # Bounce the clock ahead 51ms
       advance_time.(51)
 
       expect(MockInterface, :timer, fn :heartbeat -> &mock_timer_cancel/0 end)
 
-      expect(MockInterface, :send_event, fn :b,
-                                            {:append_entries, 1, ^t0,
-                                             [{^t1, :data1}, {^t2, :data2}], ^t0} ->
+      expect(MockInterface, :send_event, fn :b, {:append_entries, 1, ^t2, [], ^t0} ->
         :ok
       end)
 
-      expect(MockInterface, :send_event, fn :c,
-                                            {:append_entries, 1, ^t0,
-                                             [{^t1, :data1}, {^t2, :data2}], ^t0} ->
+      expect(MockInterface, :send_event, fn :c, {:append_entries, 1, ^t2, [], ^t0} ->
         :ok
       end)
 
@@ -811,16 +807,12 @@ defmodule Bedrock.RaftTest do
       # we make a note of that. since we *also* have a copy of t2, two peers
       # constitutes a quorum and we can decide that consensus has been reached
       # up to t2. we then send out a new heartbeat to both :b and :c to let them
-      # know that consensus has been reached up to t2.
+      # know that consensus has been reached up to t2. both cursors have
+      # already advanced past t2, so these are empty commit notifications.
 
       expect(MockInterface, :consensus_reached, fn _, ^t2, :latest -> :ok end)
       expect(MockInterface, :send_event, fn :b, {:append_entries, 1, ^t2, [], ^t2} -> :ok end)
-
-      expect(MockInterface, :send_event, fn :c,
-                                            {:append_entries, 1, ^t0,
-                                             [{^t1, :data1}, {^t2, :data2}], ^t2} ->
-        :ok
-      end)
+      expect(MockInterface, :send_event, fn :c, {:append_entries, 1, ^t2, [], ^t2} -> :ok end)
 
       p = p |> Raft.handle_event({:append_entries_ack, 1, true, t2}, :b)
 

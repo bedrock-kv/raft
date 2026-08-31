@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+- Development benchmarks under `bench/`: an in-process three-node cluster
+  simulator (`bench/sim.exs`) and log/leader micro-benchmarks
+  (`bench/micro.exs`) used to quantify replication behavior.
+
 ### Changed
 - `Bedrock.Raft.Log` implementations must now provide `voted_for/1` and
   `save_election_state/3`. The latter must atomically persist Raft's
@@ -26,6 +31,14 @@
 - Rejected AppendEntries requests now backtrack an independent replication
   cursor without advancing `matchIndex`; delayed responses cannot regress
   acknowledged progress, and successful bounded batches continue immediately.
+- The leader again advances each follower's replication send cursor
+  optimistically as entries are sent, restoring pipelined replication. Without
+  this, every appended transaction re-sent the entire unacknowledged window to
+  every follower and commit goodput was capped at one bounded batch per round
+  trip. The cursor remains a retry position only: acknowledged progress still
+  comes exclusively from successful responses, rejections still backtrack the
+  cursor, and a lost request is recovered via heartbeat probe, rejection, and
+  backtrack.
 - Higher-term transitions now cancel the outgoing candidate or leader timer,
   preventing an obsolete election timeout from disrupting the new leader.
 - Leadership notifications now report a new term even when the identified

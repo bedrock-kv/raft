@@ -405,6 +405,20 @@ defmodule Bedrock.Raft.Mode.Leader do
       Log.transactions_from(t.log, prev_transaction_id, :newest)
       |> Enum.take(10)
 
+    # Pipelining: move the send cursor past what this request carries so the
+    # next send continues from here instead of re-sending the same window.
+    # This is only an optimistic send position -- matchIndex still advances
+    # exclusively on acknowledged success, and a rejection backtracks the
+    # cursor again, so a lost request is recovered via heartbeat probe ->
+    # rejection -> backtrack.
+    if transactions != [] do
+      FollowerTracking.advance_send_cursor(
+        t.follower_tracking,
+        follower,
+        transactions |> List.last() |> elem(0)
+      )
+    end
+
     track_append_entries_sent(
       t.term,
       follower,

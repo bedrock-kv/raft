@@ -123,6 +123,27 @@ defmodule Bedrock.Raft.Mode.Leader.FollowerTracking do
   end
 
   @doc """
+  Advance the replication cursor optimistically when entries are sent.
+
+  The cursor only moves forwards here, so a send that races a concurrent
+  rejection cannot undo a backtrack that has already been recorded. The
+  last-seen timestamp is deliberately left untouched: it means "last heard
+  FROM the follower" and gates heartbeat retransmission through
+  `followers_not_seen_in/2`. Updating it on send would suppress heartbeats to
+  an unresponsive follower and stall loss recovery.
+  """
+  @spec advance_send_cursor(t(), Raft.peer(), Raft.transaction_id()) :: t()
+  def advance_send_cursor(t, follower, transaction_id) do
+    [{^follower, send_cursor_transaction_id, _, _}] = :ets.lookup(t.table, follower)
+
+    :ets.update_element(t.table, follower, [
+      {2, max(send_cursor_transaction_id, transaction_id)}
+    ])
+
+    t
+  end
+
+  @doc """
   Move the replication cursor backwards after a rejection without changing the
   acknowledged match position. A delayed rejection cannot move a cursor that
   has already backtracked even farther forwards again.
