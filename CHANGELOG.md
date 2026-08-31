@@ -26,6 +26,10 @@
 - Rejected AppendEntries requests now backtrack an independent replication
   cursor without advancing `matchIndex`; delayed responses cannot regress
   acknowledged progress, and successful bounded batches continue immediately.
+- Higher-term transitions now cancel the outgoing candidate or leader timer,
+  preventing an obsolete election timeout from disrupting the new leader.
+- Leadership notifications now report a new term even when the identified
+  leader is unchanged.
 
 ## [0.9.8] - 2026-08-30
 

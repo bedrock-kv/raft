@@ -280,14 +280,31 @@ defmodule Bedrock.Raft do
         # Single-node cluster immediately becomes leader
         t |> become_leader(term, updated_log)
 
-      candidate ->
+      %Candidate{} = candidate ->
         # Multi-node cluster becomes candidate and waits for votes
         %{t | mode: candidate}
-        |> notify_change_in_leadership(leader(t))
+        |> notify_change_in_leadership(leadership(t))
+
+      {:error, _reason} ->
+        # A conforming log accepts Candidate.new/6's idempotent re-save of our
+        # self-vote. If an implementation rejects it, remain in a valid mode
+        # using the election state that was already persisted above.
+        become_follower(t, :undecided, Log.current_term(updated_log), updated_log)
     end
   end
 
+  defp become_follower(%{mode: nil} = t, leader, term, log),
+    do: make_follower(t, leader, term, log)
+
   defp become_follower(t, leader, term, log) do
+    old_leadership = leadership(t)
+
+    t
+    |> make_follower(leader, term, log)
+    |> notify_change_in_leadership(old_leadership)
+  end
+
+  defp make_follower(t, leader, term, log) do
     track_became_follower(term, leader)
 
     # Persist the new term if it's higher than our current term (Raft safety requirement)
@@ -300,25 +317,34 @@ defmodule Bedrock.Raft do
       end
 
     %{t | mode: Follower.new(term, updated_log, t.interface, t.me, leader)}
-    |> notify_change_in_leadership(leader(t))
   end
 
   defp transition_to_higher_term(%{mode: %Follower{} = follower} = t, leader, term) do
-    old_leader = leader(t)
+    old_leadership = leadership(t)
     {:ok, log} = Log.save_election_state(follower.log, term, nil)
 
     %{t | mode: %{follower | leader: leader, term: term, voted_for: nil, log: log}}
-    |> notify_change_in_leadership(old_leader)
+    |> notify_change_in_leadership(old_leadership)
   end
 
-  defp transition_to_higher_term(t, leader, term),
-    do: become_follower(t, leader, term, log(t))
+  defp transition_to_higher_term(t, leader, term) do
+    t
+    |> cancel_mode_timer()
+    |> become_follower(leader, term, log(t))
+  end
 
   defp become_leader(t, term, log) do
     track_became_leader(term, t.quorum, t.peers)
 
     %{t | mode: Leader.new(term, t.quorum, t.peers, log, t.interface)}
-    |> notify_change_in_leadership(leader(t))
+    |> notify_change_in_leadership(leadership(t))
+  end
+
+  defp cancel_mode_timer(%{mode: %{cancel_timer_fn: nil}} = t), do: t
+
+  defp cancel_mode_timer(%{mode: mode} = t) do
+    mode.cancel_timer_fn.()
+    %{t | mode: %{mode | cancel_timer_fn: nil}}
   end
 
   @spec next_term(t()) :: Raft.election_term()
@@ -327,12 +353,13 @@ defmodule Bedrock.Raft do
   @spec determine_majority([peer()]) :: non_neg_integer()
   defp determine_majority(peers), do: 1 + (peers |> length() |> div(2))
 
-  @spec notify_change_in_leadership(t(), old_leader :: Raft.peer()) :: t()
-  defp notify_change_in_leadership(t, old_leader) do
-    current_leader = leader(t)
+  @spec notify_change_in_leadership(t(), old_leadership :: Raft.leadership()) :: t()
+  defp notify_change_in_leadership(t, old_leadership) do
+    {old_leader, old_term} = old_leadership
+    {current_leader, current_term} = leadership(t)
 
-    if current_leader != old_leader do
-      current_term = term(t)
+    if current_leader != old_leader or
+         (current_leader != :undecided and current_term != old_term) do
       t.interface.leadership_changed({current_leader, current_term})
       track_leadership_change(current_leader, current_term)
     end

@@ -87,6 +87,47 @@ defmodule Bedrock.Raft.ElectionSafetyTest do
     end
   end
 
+  test "a higher-term heartbeat cancels the candidate election timer" do
+    raft =
+      Raft.new(:a, [:b, :c], InMemoryLog.new(), Interface)
+      |> Raft.handle_event(:election, :timer)
+
+    owner = self()
+    raft = %{raft | mode: %{raft.mode | cancel_timer_fn: fn -> send(owner, :timer_cancelled) end}}
+
+    flush_mailbox()
+    raft = Raft.handle_event(raft, {:append_entries, 2, {0, 0}, [], {0, 0}}, :b)
+
+    assert %Follower{term: 2, leader: :b} = raft.mode
+    assert_received :timer_cancelled
+  end
+
+  test "a higher-term heartbeat from the same leader reports the new term" do
+    {:ok, log} = Log.save_election_state(InMemoryLog.new(), 3, nil)
+    initial_transaction_id = Log.initial_transaction_id(log)
+    raft = Raft.new(:a, [:b, :c], log, Interface)
+
+    raft =
+      Raft.handle_event(
+        raft,
+        {:append_entries, 3, initial_transaction_id, [], initial_transaction_id},
+        :b
+      )
+
+    flush_mailbox()
+
+    raft =
+      Raft.handle_event(
+        raft,
+        {:append_entries, 4, initial_transaction_id, [], initial_transaction_id},
+        :b
+      )
+
+    assert Raft.leadership(raft) == {:b, 4}
+    assert_received {:leadership_changed, {:b, 4}}
+    refute_receive {:leadership_changed, {:b, 4}}
+  end
+
   test "a higher-term AppendEntries request clears the old vote before it is handled" do
     {:ok, log} = Log.save_election_state(InMemoryLog.new(), 1, :old_candidate)
     raft = Raft.new(:a, [:b, :c], log, Interface)
