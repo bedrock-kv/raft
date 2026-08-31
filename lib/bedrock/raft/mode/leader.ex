@@ -206,6 +206,17 @@ defmodule Bedrock.Raft.Mode.Leader do
           {:ok, t()}
   def append_entries_ack_received(t, term, follower_newest_transaction_id, _from = follower)
       when term == t.term do
+    if follower in t.peers do
+      handle_current_term_ack(t, term, follower_newest_transaction_id, follower)
+    else
+      {:ok, t}
+    end
+  end
+
+  def append_entries_ack_received(t, term, _, _) when term > t.term, do: become_follower(t)
+  def append_entries_ack_received(t, _, _, _), do: {:ok, t}
+
+  defp handle_current_term_ack(t, term, follower_newest_transaction_id, follower) do
     track_append_entries_ack_received(term, follower, follower_newest_transaction_id)
 
     # What's the newest transaction that the *we* have?
@@ -215,7 +226,7 @@ defmodule Bedrock.Raft.Mode.Leader do
     # tracker with the newest transaction id they've reported, then we'll use
     # that to compute the newest safe transaction that there's a quorum for.
     # Otherwise, we'll use the newest safe transaction from our log.
-    newest_safe_transaction_id =
+    quorum_transaction_id =
       if follower_newest_transaction_id <= newest_transaction_id do
         FollowerTracking.update_newest_transaction_id(
           t.follower_tracking,
@@ -224,6 +235,16 @@ defmodule Bedrock.Raft.Mode.Leader do
         )
 
         FollowerTracking.newest_safe_transaction_id(t.follower_tracking, t.quorum)
+      else
+        Log.newest_safe_transaction_id(t.log)
+      end
+
+    # Raft only commits entries from the leader's current term by counting
+    # replicas. Committing one of those entries also commits its preceding
+    # entries from older terms indirectly.
+    newest_safe_transaction_id =
+      if TransactionID.term(quorum_transaction_id) == t.term do
+        quorum_transaction_id
       else
         Log.newest_safe_transaction_id(t.log)
       end
@@ -260,9 +281,6 @@ defmodule Bedrock.Raft.Mode.Leader do
     end
     |> then(&{:ok, &1})
   end
-
-  def append_entries_ack_received(t, term, _, _) when term > t.term, do: become_follower(t)
-  def append_entries_ack_received(t, _, _, _), do: {:ok, t}
 
   @doc """
   A ping that is normally directed at a follower has been received. If the term
