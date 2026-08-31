@@ -78,7 +78,7 @@ defmodule Bedrock.Raft.Telemetry do
     })
   end
 
-  @spec track_election_ended(Raft.election_term(), non_neg_integer(), non_neg_integer()) :: :ok
+  @spec track_election_ended(Raft.election_term(), [Raft.peer()], non_neg_integer()) :: :ok
   def track_election_ended(term, votes, quorum) do
     :telemetry.execute([:bedrock, :raft, :election_ended], %{at: now()}, %{
       term: term,

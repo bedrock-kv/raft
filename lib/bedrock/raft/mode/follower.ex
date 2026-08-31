@@ -75,6 +75,7 @@ defmodule Bedrock.Raft.Mode.Follower do
       me: me,
       term: term,
       leader: leader,
+      voted_for: Log.voted_for(log),
       log: log,
       interface: interface
     }
@@ -96,12 +97,18 @@ defmodule Bedrock.Raft.Mode.Follower do
           candidate :: Raft.peer(),
           candidate_last_transaction_id :: Raft.transaction_id()
         ) :: {:ok, t()} | :become_follower
+  def vote_requested(t, term, candidate, candidate_newest_transaction_id) when term > t.term do
+    t
+    |> advance_term(term)
+    |> vote_requested(term, candidate, candidate_newest_transaction_id)
+  end
+
   def vote_requested(t, term, candidate, candidate_newest_transaction_id)
-      when term >= t.term and is_nil(t.voted_for) do
+      when term == t.term do
     if log_at_least_as_up_to_date?(
          candidate_newest_transaction_id,
          Log.newest_transaction_id(t.log)
-       ) do
+       ) and (is_nil(t.voted_for) or t.voted_for == candidate) do
       t
       |> reset_timer()
       |> vote_for(term, candidate)
@@ -118,7 +125,7 @@ defmodule Bedrock.Raft.Mode.Follower do
   @impl true
   @spec vote_received(t(), Raft.election_term(), follower :: Raft.peer()) ::
           :become_follower | {:ok, t()}
-  def vote_received(t, term, _) when term >= t.term, do: become_follower(t)
+  def vote_received(t, term, _) when term > t.term, do: become_follower(t)
   def vote_received(t, _, _), do: {:ok, t}
 
   @doc """
@@ -141,7 +148,7 @@ defmodule Bedrock.Raft.Mode.Follower do
           newest_transaction_id :: Raft.transaction_id(),
           follower :: Raft.peer()
         ) :: {:ok, t()} | :become_follower
-  def append_entries_ack_received(t, term, _, _) when term >= t.term, do: t |> become_follower()
+  def append_entries_ack_received(t, term, _, _) when term > t.term, do: t |> become_follower()
   def append_entries_ack_received(t, _, _, _), do: {:ok, t}
 
   @doc """
@@ -170,6 +177,8 @@ defmodule Bedrock.Raft.Mode.Follower do
         from
       )
       when term >= t.term do
+    t = advance_term(t, term)
+
     track_append_entries_received(
       term,
       from,
@@ -330,10 +339,18 @@ defmodule Bedrock.Raft.Mode.Follower do
 
   @spec vote_for(t(), Raft.election_term(), Raft.peer()) :: t()
   defp vote_for(t, term, candidate) do
+    {:ok, log} = Log.save_election_state(t.log, term, candidate)
     track_vote_sent(term, candidate)
     t.interface.send_event(candidate, {:vote, term})
-    %{t | voted_for: candidate, term: term}
+    %{t | voted_for: candidate, term: term, log: log}
   end
+
+  defp advance_term(t, term) when term > t.term do
+    {:ok, log} = Log.save_election_state(t.log, term, nil)
+    %{t | term: term, leader: :undecided, voted_for: nil, log: log}
+  end
+
+  defp advance_term(t, _term), do: t
 
   @spec reset_timer(t()) :: t()
   defp reset_timer(t), do: t |> cancel_timer() |> set_timer()
