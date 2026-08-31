@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.9.8] - 2026-08-30
+
+### Changed
+- Loosened the `telemetry` dependency from `~> 1.3.0` to `~> 1.3`, so `bedrock_raft`
+  no longer blocks resolution in applications that depend on `telemetry` 1.4 or later.
+  No code changes were needed — the library only uses the stable `:telemetry.execute/3`
+  API. (Thanks to @mikehostetler.)
+- The library now compiles with `warnings_as_errors` enabled, and CI runs the same
+  matrix as `bedrock` (Elixir 1.17–1.20 / OTP 27–29), including `mix deps.audit`
+  and Dialyzer. Development tooling is now pinned to Elixir 1.20.3 / OTP 29.
+- `Bedrock.Raft.Mode.Leader.add_transaction/2` was refactored to split single-node and
+  multi-node replication into separate clauses. Behaviour is unchanged.
+
+## [0.9.7.1] - 2025-12-31
+
+### Fixed
+- Formatting corrections to `mix.exs`; no functional changes.
+
+## [0.9.7] - 2025-12-31
+
+### Added
+- Hex package metadata (`description`, `package/0`, `docs/0`) so the library can be
+  published to hex.pm, with `ex_doc` generating docs from the README and CHANGELOG.
+- Build status and code coverage badges in the README, with coverage reported via
+  `excoveralls`.
+
+## [0.9.6] - 2025-08-12
+
+### Changed
+- Interface callbacks are now invoked directly (`t.interface.send_event(...)`) rather
+  than through `apply/3`, improving readability and letting Dialyzer check the
+  `Bedrock.Raft.Interface` calls.
+- Corrected the `@spec` for `Bedrock.Raft.Mode.Candidate.new/5` to reflect that it may
+  return `:become_leader` in single-node clusters.
+- Added CI with Credo, Dialyzer (with cached PLTs), and test runs.
+
 ## [0.9.5] - 2025-08-03
 
 ### Changed
