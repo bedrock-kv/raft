@@ -237,6 +237,83 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
     end
   end
 
+  describe "append_entries_ack_received/4" do
+    test "ignores acknowledgements from peers outside the cluster" do
+      log = InMemoryLog.new()
+
+      expect(MockInterface, :timestamp_in_ms, fn -> 1000 end)
+      expect(MockInterface, :timer, fn :heartbeat -> &mock_cancel/0 end)
+      leader = Leader.new(2, 0, [], log, MockInterface)
+
+      assert {:ok, ^leader} =
+               Leader.append_entries_ack_received(leader, 2, {0, 0}, :unknown_peer)
+    end
+
+    test "does not directly commit an entry from a previous term" do
+      log = InMemoryLog.new()
+      initial_transaction_id = Log.initial_transaction_id(log)
+      previous_term_transaction_id = {1, 1}
+
+      {:ok, log} =
+        Log.append_transactions(log, initial_transaction_id, [
+          {previous_term_transaction_id, :previous_term}
+        ])
+
+      expect(MockInterface, :timestamp_in_ms, fn -> 1000 end)
+      expect(MockInterface, :timer, fn :heartbeat -> &mock_cancel/0 end)
+      leader = Leader.new(2, 1, [:peer_1], log, MockInterface)
+
+      expect(MockInterface, :timestamp_in_ms, fn -> 1010 end)
+
+      {:ok, leader} =
+        Leader.append_entries_ack_received(leader, 2, previous_term_transaction_id, :peer_1)
+
+      assert Log.newest_safe_transaction_id(leader.log) == initial_transaction_id
+    end
+
+    test "commits a previous-term prefix indirectly with a current-term entry" do
+      log = InMemoryLog.new()
+      initial_transaction_id = Log.initial_transaction_id(log)
+      previous_term_transaction_id = {1, 1}
+      current_term_transaction_id = {2, 2}
+
+      {:ok, log} =
+        Log.append_transactions(log, initial_transaction_id, [
+          {previous_term_transaction_id, :previous_term},
+          {current_term_transaction_id, :current_term}
+        ])
+
+      expect(MockInterface, :timestamp_in_ms, fn -> 1000 end)
+      expect(MockInterface, :timer, fn :heartbeat -> &mock_cancel/0 end)
+      leader = Leader.new(2, 1, [:peer_1], log, MockInterface)
+
+      expect(MockInterface, :timestamp_in_ms, fn -> 1010 end)
+
+      expect(MockInterface, :consensus_reached, fn committed_log,
+                                                   ^current_term_transaction_id,
+                                                   :latest ->
+        assert Log.newest_safe_transaction_id(committed_log) == current_term_transaction_id
+        :ok
+      end)
+
+      expect(MockInterface, :send_event, fn :peer_1,
+                                            {:append_entries, 2, ^current_term_transaction_id, [],
+                                             ^current_term_transaction_id} ->
+        :ok
+      end)
+
+      {:ok, leader} =
+        Leader.append_entries_ack_received(leader, 2, current_term_transaction_id, :peer_1)
+
+      assert Log.newest_safe_transaction_id(leader.log) == current_term_transaction_id
+
+      assert Log.transactions_from(leader.log, initial_transaction_id, :newest_safe) == [
+               {previous_term_transaction_id, :previous_term},
+               {current_term_transaction_id, :current_term}
+             ]
+    end
+  end
+
   describe "add_transaction/2" do
     test "successfully adds transaction and sends append_entries to followers" do
       term = 2
