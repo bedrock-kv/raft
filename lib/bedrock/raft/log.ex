@@ -14,10 +14,13 @@ defprotocol Bedrock.Raft.Log do
   def new_id(t, term, sequence)
 
   @doc """
-  Purge the log of all transactions after the given id. If the newest safe
-  transaction id is greater than the given id, reset it to the given id.
+  Purge the log of all transactions after the given id.
+
+  A purge that would remove committed transactions is rejected because Raft's
+  commit index must never decrease.
   """
-  @spec purge_transactions_after(t(), Raft.transaction_id()) :: {:ok, t()}
+  @spec purge_transactions_after(t(), Raft.transaction_id()) ::
+          {:ok, t()} | {:error, :would_delete_committed_transactions}
   def purge_transactions_after(t, transaction_id)
 
   @doc """

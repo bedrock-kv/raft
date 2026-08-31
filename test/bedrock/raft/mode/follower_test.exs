@@ -356,6 +356,101 @@ defmodule Bedrock.Raft.Mode.FollowerTest do
       assert Log.has_transaction_id?(follower.log, {1, 2})
     end
 
+    test "preserves a committed suffix when an old tuple AppendEntries RPC is duplicated" do
+      assert_duplicate_append_preserves_committed_suffix(:tuple)
+    end
+
+    test "preserves a committed suffix when an old binary AppendEntries RPC is duplicated" do
+      assert_duplicate_append_preserves_committed_suffix(:binary)
+    end
+
+    test "truncates at the first conflicting index and appends from there" do
+      term = 3
+      leader = :peer_1
+      log = InMemoryLog.new()
+      initial_id = Log.initial_transaction_id(log)
+
+      existing_transactions = [
+        {Log.new_id(log, 1, 1), :matching},
+        {Log.new_id(log, 1, 2), :old_2},
+        {Log.new_id(log, 1, 3), :old_3},
+        {Log.new_id(log, 1, 4), :old_4}
+      ]
+
+      incoming_transactions = [
+        {Log.new_id(log, 1, 1), :matching},
+        {Log.new_id(log, 2, 2), :new_2},
+        {Log.new_id(log, 2, 3), :new_3}
+      ]
+
+      {:ok, log} = Log.append_transactions(log, initial_id, existing_transactions)
+      {:ok, log} = Log.commit_up_to(log, Log.new_id(log, 1, 1))
+
+      expect(MockInterface, :timer, 2, fn :election -> &mock_cancel/0 end)
+
+      expect(MockInterface, :send_event, fn ^leader, {:append_entries_ack, ^term, {2, 3}} ->
+        :ok
+      end)
+
+      follower = Follower.new(term, log, MockInterface, :peer_0, leader)
+
+      {:ok, follower} =
+        Follower.append_entries_received(
+          follower,
+          term,
+          initial_id,
+          incoming_transactions,
+          Log.new_id(log, 1, 1),
+          leader
+        )
+
+      assert Log.transactions_to(follower.log, :newest) == incoming_transactions
+      assert Log.newest_safe_transaction_id(follower.log) == Log.new_id(log, 1, 1)
+    end
+
+    test "rejects a conflict that would truncate the committed prefix" do
+      term = 3
+      leader = :peer_1
+      log = InMemoryLog.new()
+      initial_id = Log.initial_transaction_id(log)
+
+      existing_transactions = [
+        {Log.new_id(log, 1, 1), :committed_1},
+        {Log.new_id(log, 1, 2), :committed_2}
+      ]
+
+      conflicting_transactions = [
+        {Log.new_id(log, 1, 1), :committed_1},
+        {Log.new_id(log, 2, 2), :conflict}
+      ]
+
+      {:ok, log} = Log.append_transactions(log, initial_id, existing_transactions)
+      committed_id = Log.new_id(log, 1, 2)
+      {:ok, log} = Log.commit_up_to(log, committed_id)
+
+      expect(MockInterface, :timer, 2, fn :election -> &mock_cancel/0 end)
+
+      expect(MockInterface, :send_event, fn ^leader,
+                                            {:append_entries_ack, ^term, ^committed_id} ->
+        :ok
+      end)
+
+      follower = Follower.new(term, log, MockInterface, :peer_0, leader)
+
+      {:ok, follower} =
+        Follower.append_entries_received(
+          follower,
+          term,
+          initial_id,
+          conflicting_transactions,
+          initial_id,
+          leader
+        )
+
+      assert Log.transactions_to(follower.log, :newest) == existing_transactions
+      assert Log.newest_safe_transaction_id(follower.log) == committed_id
+    end
+
     test "handles empty transactions list" do
       term = 1
       log = InMemoryLog.new()
@@ -424,5 +519,43 @@ defmodule Bedrock.Raft.Mode.FollowerTest do
       assert follower.leader == leader
       assert Log.has_transaction_id?(follower.log, {1, 3})
     end
+  end
+
+  defp assert_duplicate_append_preserves_committed_suffix(format) do
+    term = 1
+    leader = :peer_1
+    log = InMemoryLog.new(format)
+    initial_id = Log.initial_transaction_id(log)
+
+    transactions =
+      for index <- 1..20 do
+        {Log.new_id(log, term, index), {:command, index}}
+      end
+
+    {:ok, log} = Log.append_transactions(log, initial_id, transactions)
+    newest_id = Log.new_id(log, term, 20)
+    {:ok, log} = Log.commit_up_to(log, newest_id)
+
+    expect(MockInterface, :timer, 2, fn :election -> &mock_cancel/0 end)
+
+    expect(MockInterface, :send_event, fn ^leader, {:append_entries_ack, ^term, ^newest_id} ->
+      :ok
+    end)
+
+    follower = Follower.new(term, log, MockInterface, :peer_0, leader)
+
+    {:ok, follower} =
+      Follower.append_entries_received(
+        follower,
+        term,
+        initial_id,
+        Enum.take(transactions, 10),
+        initial_id,
+        leader
+      )
+
+    assert Log.transactions_to(follower.log, :newest) == transactions
+    assert Log.newest_transaction_id(follower.log) == newest_id
+    assert Log.newest_safe_transaction_id(follower.log) == newest_id
   end
 end

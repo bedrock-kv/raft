@@ -222,40 +222,53 @@ defmodule Bedrock.Raft.Mode.Follower do
   def try_to_append_transactions(t, _prev_transaction, []), do: t
 
   def try_to_append_transactions(t, prev_transaction_id, transactions) do
-    newest_safe_transaction_id = Log.newest_safe_transaction_id(t.log)
+    existing_transactions = Log.transactions_from(t.log, prev_transaction_id, :newest)
 
-    {prev_transaction_id, transactions} =
-      skip_transactions_already_in_log(
-        prev_transaction_id,
-        transactions,
-        newest_safe_transaction_id
-      )
+    case reconcile_transactions(existing_transactions, transactions, prev_transaction_id) do
+      :unchanged ->
+        t
 
-    with {:ok, log} <- Log.purge_transactions_after(t.log, prev_transaction_id),
-         {:ok, log} <- Log.append_transactions(log, prev_transaction_id, transactions) do
-      %{t | log: log}
-    else
-      {:error, :prev_transaction_not_found} -> t
+      {:append_after, matching_transaction_id, transactions_to_append} ->
+        with {:ok, log} <-
+               Log.purge_transactions_after(t.log, matching_transaction_id),
+             {:ok, log} <-
+               Log.append_transactions(log, matching_transaction_id, transactions_to_append) do
+          %{t | log: log}
+        else
+          {:error, :prev_transaction_not_found} -> t
+          {:error, :would_delete_committed_transactions} -> t
+        end
     end
   end
 
-  @spec skip_transactions_already_in_log(
-          prev_txn_id :: Raft.transaction_id(),
-          transactions :: [Raft.transaction()],
-          newest_txn_id :: Raft.transaction_id()
-        ) :: {Raft.transaction_id(), [Raft.transaction()]}
-  defp skip_transactions_already_in_log(prev_txn_id, [], _newest_txn_id), do: {prev_txn_id, []}
+  @spec reconcile_transactions(
+          existing_transactions :: [Raft.transaction()],
+          incoming_transactions :: [Raft.transaction()],
+          last_matching_transaction_id :: Raft.transaction_id()
+        ) ::
+          :unchanged | {:append_after, Raft.transaction_id(), [Raft.transaction()]}
+  defp reconcile_transactions(_existing_transactions, [], _last_matching_transaction_id),
+    do: :unchanged
 
-  defp skip_transactions_already_in_log(
-         prev_txn_id,
-         [{txn_id, _payload} | remaining_transactions],
-         newest_txn_id
-       )
-       when prev_txn_id < newest_txn_id,
-       do: skip_transactions_already_in_log(txn_id, remaining_transactions, newest_txn_id)
+  defp reconcile_transactions([], incoming_transactions, last_matching_transaction_id),
+    do: {:append_after, last_matching_transaction_id, incoming_transactions}
 
-  defp skip_transactions_already_in_log(prev_txn_id, transactions, _newest_txn_id),
-    do: {prev_txn_id, transactions}
+  defp reconcile_transactions(
+         [{existing_id, _existing_payload} | existing_transactions],
+         [{incoming_id, _incoming_payload} | incoming_transactions] = remaining_incoming,
+         last_matching_transaction_id
+       ) do
+    if same_index_and_term?(existing_id, incoming_id) do
+      reconcile_transactions(existing_transactions, incoming_transactions, existing_id)
+    else
+      {:append_after, last_matching_transaction_id, remaining_incoming}
+    end
+  end
+
+  defp same_index_and_term?(left_id, right_id) do
+    TransactionID.index(left_id) == TransactionID.index(right_id) and
+      TransactionID.term(left_id) == TransactionID.term(right_id)
+  end
 
   defp note_change_in_leadership_if_necessary(t, leader, term)
        when t.leader == :undecided or term > t.term do

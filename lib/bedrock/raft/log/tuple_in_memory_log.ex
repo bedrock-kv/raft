@@ -66,8 +66,12 @@ defmodule Bedrock.Raft.Log.TupleInMemoryLog do
 
     @impl true
     def purge_transactions_after(t, newest_txn_id) do
-      :ets.select_delete(t.transactions, match_gt_for_delete(newest_txn_id))
-      {:ok, %{t | last_commit: min(t.last_commit, newest_txn_id)}}
+      if newest_txn_id < newest_safe_transaction_id(t) do
+        {:error, :would_delete_committed_transactions}
+      else
+        :ets.select_delete(t.transactions, match_gt_for_delete(newest_txn_id))
+        {:ok, t}
+      end
     end
 
     @impl true

@@ -206,7 +206,7 @@ defmodule Bedrock.Raft.Log.BinaryInMemoryLogTest do
   end
 
   describe "purge_transactions_after/2" do
-    test "purges transactions after the given transaction ID", %{log: log} do
+    test "purges uncommitted transactions after the given transaction ID", %{log: log} do
       transaction_1_id = TransactionID.encode({0, 1})
       transaction_1 = {transaction_1_id, :data_1}
       transaction_2_id = TransactionID.encode({0, 2})
@@ -214,13 +214,32 @@ defmodule Bedrock.Raft.Log.BinaryInMemoryLogTest do
 
       {:ok, log} = Log.append_transactions(log, TransactionID.encode({0, 0}), [transaction_1])
       {:ok, log} = Log.append_transactions(log, transaction_1_id, [transaction_2])
-      {:ok, log} = Log.commit_up_to(log, transaction_2_id)
+      {:ok, log} = Log.commit_up_to(log, transaction_1_id)
 
       {:ok, purged_log} = Log.purge_transactions_after(log, transaction_1_id)
 
       assert !Log.has_transaction_id?(purged_log, transaction_2_id)
       assert Log.has_transaction_id?(purged_log, transaction_1_id)
       assert purged_log.last_commit == transaction_1_id
+    end
+
+    test "rejects a purge that would delete committed transactions", %{log: log} do
+      transaction_1_id = TransactionID.encode({0, 1})
+      transaction_2_id = TransactionID.encode({0, 2})
+
+      transactions = [
+        {transaction_1_id, :data_1},
+        {transaction_2_id, :data_2}
+      ]
+
+      {:ok, log} = Log.append_transactions(log, TransactionID.encode({0, 0}), transactions)
+      {:ok, log} = Log.commit_up_to(log, transaction_2_id)
+
+      assert {:error, :would_delete_committed_transactions} =
+               Log.purge_transactions_after(log, transaction_1_id)
+
+      assert Log.transactions_to(log, :newest) == transactions
+      assert Log.newest_safe_transaction_id(log) == transaction_2_id
     end
   end
 
