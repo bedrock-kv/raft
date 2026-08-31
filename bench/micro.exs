@@ -48,6 +48,24 @@ defmodule Micro do
       :ets.delete(bl.transactions)
     end
 
+    IO.puts("\n== transactions_from/4 (limit 10, from mid-log) ==")
+    IO.puts("N        tuple_us    binary_us")
+
+    for n <- sizes do
+      tl = build_tuple_log(n)
+      bl = build_binary_log(n)
+      t = time_us(fn -> Log.transactions_from(tl, {1, div(n, 2)}, :newest, 10) end)
+
+      b =
+        time_us(fn ->
+          Log.transactions_from(bl, TransactionID.encode({1, div(n, 2)}), :newest, 10)
+        end)
+
+      IO.puts(String.pad_trailing("#{n}", 9) <> String.pad_trailing("#{t}", 12) <> "#{b}")
+      :ets.delete(tl.transactions)
+      :ets.delete(bl.transactions)
+    end
+
     IO.puts("\n== control: :ets.next-based walk of same 5-entry suffix (tuple log) ==")
     IO.puts("N        next_walk_us")
 

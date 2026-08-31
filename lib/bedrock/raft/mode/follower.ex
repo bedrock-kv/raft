@@ -255,7 +255,14 @@ defmodule Bedrock.Raft.Mode.Follower do
   def try_to_append_transactions(t, _prev_transaction, []), do: {:ok, t}
 
   def try_to_append_transactions(t, prev_transaction_id, transactions) do
-    existing_transactions = Log.transactions_from(t.log, prev_transaction_id, :newest)
+    # reconcile_transactions/3 pairs existing entries positionally with the
+    # incoming ones and never looks past the incoming list: it stops at the
+    # first mismatch, when the incoming list runs out (:unchanged -- which also
+    # covers a longer local suffix), or when the existing entries run out
+    # (append the remainder). Fetching more than length(transactions) existing
+    # entries can therefore never change the outcome, so we bound the read.
+    existing_transactions =
+      Log.transactions_from(t.log, prev_transaction_id, :newest, length(transactions))
 
     case reconcile_transactions(existing_transactions, transactions, prev_transaction_id) do
       :unchanged ->

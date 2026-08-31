@@ -324,4 +324,120 @@ defmodule Bedrock.Raft.Log.BinaryInMemoryLogTest do
                TransactionID.encode({1, 2})
     end
   end
+
+  describe "transactions_from/3 bounded-walk semantics" do
+    setup %{log: log} do
+      ids = for i <- 1..6, do: TransactionID.encode({1, i})
+      transactions = Enum.map(ids, &{&1, {:data, &1}})
+      {:ok, log} = Log.append_transactions(log, TransactionID.encode({0, 0}), transactions)
+      {:ok, log: log, transactions: transactions}
+    end
+
+    test "returns a middle range, exclusive of from and inclusive of to", %{
+      log: log,
+      transactions: transactions
+    } do
+      assert Log.transactions_from(
+               log,
+               TransactionID.encode({1, 2}),
+               TransactionID.encode({1, 5})
+             ) ==
+               Enum.slice(transactions, 2, 3)
+    end
+
+    test "returns everything after the initial ID", %{log: log, transactions: transactions} do
+      assert Log.transactions_from(log, TransactionID.encode({0, 0}), :newest) == transactions
+    end
+
+    test "a to beyond the newest entry stops at the newest entry", %{
+      log: log,
+      transactions: transactions
+    } do
+      assert Log.transactions_from(
+               log,
+               TransactionID.encode({1, 2}),
+               TransactionID.encode({9, 9})
+             ) ==
+               Enum.slice(transactions, 2, 4)
+    end
+
+    test "an empty log returns an empty list" do
+      log = BinaryInMemoryLog.new()
+      assert Log.transactions_from(log, TransactionID.encode({0, 0}), :newest) == []
+    end
+
+    test "a single-entry log returns its entry" do
+      log = BinaryInMemoryLog.new()
+      transaction = {TransactionID.encode({1, 1}), :only}
+      {:ok, log} = Log.append_transactions(log, TransactionID.encode({0, 0}), [transaction])
+      assert Log.transactions_from(log, TransactionID.encode({0, 0}), :newest) == [transaction]
+      assert Log.transactions_from(log, TransactionID.encode({1, 1}), :newest) == []
+    end
+
+    test "an absent from returns the transactions that sort after it" do
+      log = BinaryInMemoryLog.new()
+
+      {:ok, log} =
+        Log.append_transactions(log, TransactionID.encode({0, 0}), [
+          {TransactionID.encode({1, 1}), :a},
+          {TransactionID.encode({1, 2}), :b},
+          {TransactionID.encode({1, 4}), :c}
+        ])
+
+      assert Log.transactions_from(log, TransactionID.encode({1, 3}), :newest) == [
+               {TransactionID.encode({1, 4}), :c}
+             ]
+    end
+  end
+
+  describe "transactions_from/4" do
+    setup %{log: log} do
+      ids = for i <- 1..6, do: TransactionID.encode({1, i})
+      transactions = Enum.map(ids, &{&1, {:data, &1}})
+      {:ok, log} = Log.append_transactions(log, TransactionID.encode({0, 0}), transactions)
+      {:ok, log: log, transactions: transactions}
+    end
+
+    test "limits the number of returned transactions", %{log: log, transactions: transactions} do
+      assert Log.transactions_from(log, TransactionID.encode({0, 0}), :newest, 3) ==
+               Enum.take(transactions, 3)
+    end
+
+    test "a limit of 0 returns an empty list", %{log: log} do
+      assert Log.transactions_from(log, TransactionID.encode({0, 0}), :newest, 0) == []
+    end
+
+    test "a limit larger than the available entries returns everything", %{
+      log: log,
+      transactions: transactions
+    } do
+      assert Log.transactions_from(log, TransactionID.encode({0, 0}), :newest, 100) ==
+               transactions
+    end
+
+    test ":infinity behaves like transactions_from/3", %{log: log, transactions: transactions} do
+      assert Log.transactions_from(log, TransactionID.encode({1, 2}), :newest, :infinity) ==
+               Log.transactions_from(log, TransactionID.encode({1, 2}), :newest)
+
+      assert Log.transactions_from(log, TransactionID.encode({0, 0}), :newest, :infinity) ==
+               transactions
+    end
+
+    test "the limit applies within the from/to bounds", %{log: log, transactions: transactions} do
+      assert Log.transactions_from(
+               log,
+               TransactionID.encode({1, 2}),
+               TransactionID.encode({1, 5}),
+               2
+             ) ==
+               Enum.slice(transactions, 2, 2)
+    end
+
+    test "honors :newest_safe as the upper bound", %{log: log, transactions: transactions} do
+      {:ok, log} = Log.commit_up_to(log, TransactionID.encode({1, 4}))
+
+      assert Log.transactions_from(log, TransactionID.encode({1, 1}), :newest_safe, 10) ==
+               Enum.slice(transactions, 1, 3)
+    end
+  end
 end

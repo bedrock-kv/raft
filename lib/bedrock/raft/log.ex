@@ -86,6 +86,22 @@ defprotocol Bedrock.Raft.Log do
   def transactions_from(t, from, to)
 
   @doc """
+  Same as `transactions_from/3`, but returns at most `limit` transactions.
+
+  A `limit` of `:infinity` behaves exactly like `transactions_from/3`, and a
+  limit of `0` returns an empty list. Implementations should answer in
+  O(limit + log n) time -- the replication hot path fetches one bounded batch
+  per AppendEntries request through this function.
+  """
+  @spec transactions_from(
+          t(),
+          from :: Raft.transaction_id(),
+          to :: Raft.transaction_id() | :newest | :newest_safe,
+          limit :: non_neg_integer() | :infinity
+        ) :: [Raft.transaction()]
+  def transactions_from(t, from, to, limit)
+
+  @doc """
   Get the current term for the log. This is the latest election term the
   server has seen and must be persisted across restarts according to the
   Raft specification.

@@ -455,9 +455,7 @@ defmodule Bedrock.Raft.Mode.Leader do
          prev_transaction_id,
          newest_safe_transaction_id
        ) do
-    transactions =
-      Log.transactions_from(t.log, prev_transaction_id, :newest)
-      |> Enum.take(10)
+    transactions = Log.transactions_from(t.log, prev_transaction_id, :newest, 10)
 
     # Pipelining: move the send cursor past what this request carries so the
     # next send continues from here instead of re-sending the same window.

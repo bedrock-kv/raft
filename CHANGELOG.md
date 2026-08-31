@@ -32,8 +32,23 @@
   `previous_transaction_id/2`, returning the newest transaction id older than
   the given id (or the initial id) in at most O(log n) time. The bundled
   in-memory logs implement it with `:ets.prev/2`.
+- `Bedrock.Raft.Log` implementations must now provide `transactions_from/4`,
+  which behaves like `transactions_from/3` but returns at most `limit`
+  transactions (`:infinity` for no limit, `0` for none). The replication hot
+  paths now fetch bounded batches: the leader reads exactly one batch per
+  AppendEntries request and the follower reads no more existing entries than
+  the request carries.
 
 ### Fixed
+- Log range reads in the bundled in-memory logs are now bounded key walks over
+  the ETS ordered_set (O(result + log n)) instead of match-spec selects that
+  traversed the entire table regardless of the requested range. Per-operation
+  replication cost no longer grows with total log history. As a side effect,
+  `transactions_from` no longer raises a `CaseClauseError` when the `from` id
+  is absent but later entries exist; it returns the transactions that sort
+  after the given id. `purge_transactions_after` also short-circuits when
+  nothing sorts after the given id, since the follower purges before every
+  append and the deleting scan is only needed on an actual conflict.
 - Rejected AppendEntries responses now reposition the leader's send cursor
   directly to the follower's hinted position when that entry exists in the
   leader's log, catching a lagging follower up after a single rejection
