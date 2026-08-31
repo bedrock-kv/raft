@@ -303,4 +303,25 @@ defmodule Bedrock.Raft.Log.BinaryInMemoryLogTest do
       assert Log.transactions_to(updated_log, :newest) == [{expected_id, :some_data}]
     end
   end
+
+  describe "previous_transaction_id/2" do
+    test "returns the preceding transaction ID and handles the edges", %{log: log} do
+      initial_id = Log.initial_transaction_id(log)
+
+      {:ok, log} =
+        Log.append_transactions(log, initial_id, [
+          {TransactionID.encode({1, 1}), :data_1},
+          {TransactionID.encode({1, 2}), :data_2}
+        ])
+
+      assert Log.previous_transaction_id(log, TransactionID.encode({1, 2})) ==
+               TransactionID.encode({1, 1})
+
+      assert Log.previous_transaction_id(log, TransactionID.encode({1, 1})) == initial_id
+      assert Log.previous_transaction_id(log, initial_id) == initial_id
+
+      assert Log.previous_transaction_id(log, TransactionID.encode({9, 9})) ==
+               TransactionID.encode({1, 2})
+    end
+  end
 end

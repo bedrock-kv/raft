@@ -41,7 +41,7 @@ defmodule Bedrock.Raft.Mode.Follower do
       track_consensus_reached: 1,
       track_vote_sent: 2,
       track_append_entries_received: 5,
-      track_append_entries_ack_sent: 4
+      track_append_entries_ack_sent: 5
     ]
 
   @type t :: %__MODULE__{
@@ -147,12 +147,13 @@ defmodule Bedrock.Raft.Mode.Follower do
           Raft.election_term(),
           success :: boolean(),
           request_transaction_id :: Raft.transaction_id(),
+          follower_newest_transaction_id :: Raft.transaction_id(),
           follower :: Raft.peer()
         ) :: {:ok, t()} | :become_follower
-  def append_entries_ack_received(t, term, _, _, _) when term > t.term,
+  def append_entries_ack_received(t, term, _, _, _, _) when term > t.term,
     do: t |> become_follower()
 
-  def append_entries_ack_received(t, _, _, _, _), do: {:ok, t}
+  def append_entries_ack_received(t, _, _, _, _, _), do: {:ok, t}
 
   @doc """
   A ping has been received. If the term is greater than our term, then we will
@@ -370,11 +371,24 @@ defmodule Bedrock.Raft.Mode.Follower do
 
   @spec send_append_entries_ack(t(), Raft.peer(), boolean(), Raft.transaction_id()) :: t()
   defp send_append_entries_ack(t, leader, success, request_transaction_id) do
-    track_append_entries_ack_sent(t.term, leader, success, request_transaction_id)
+    # Our newest local entry rides along as an ADVISORY hint that lets the
+    # leader reposition its send cursor in a single round trip. The next
+    # AppendEntries consistency check validates whatever the leader does with
+    # it, so it must never be treated as acknowledged replication.
+    follower_newest_transaction_id = Log.newest_transaction_id(t.log)
+
+    track_append_entries_ack_sent(
+      t.term,
+      leader,
+      success,
+      request_transaction_id,
+      follower_newest_transaction_id
+    )
 
     t.interface.send_event(
       leader,
-      {:append_entries_ack, t.term, success, request_transaction_id}
+      {:append_entries_ack, t.term, success, request_transaction_id,
+       follower_newest_transaction_id}
     )
 
     t

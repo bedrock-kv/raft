@@ -73,7 +73,7 @@ defmodule Bedrock.Raft.ElectionSafetyTest do
   end
 
   test "higher-term responses persist the term and step a candidate down" do
-    for event <- [{:vote, 2}, {:append_entries_ack, 2, true, {0, 0}}] do
+    for event <- [{:vote, 2}, {:append_entries_ack, 2, true, {0, 0}, {0, 0}}] do
       raft =
         Raft.new(:a, [:b, :c], InMemoryLog.new(), Interface)
         |> Raft.handle_event(:election, :timer)
@@ -138,7 +138,7 @@ defmodule Bedrock.Raft.ElectionSafetyTest do
     assert %Follower{term: 2, leader: :b, voted_for: nil} = raft.mode
     assert Log.current_term(Raft.log(raft)) == 2
     assert Log.voted_for(Raft.log(raft)) == nil
-    assert_received {:sent, :b, {:append_entries_ack, 2, true, {0, 0}}}
+    assert_received {:sent, :b, {:append_entries_ack, 2, true, {0, 0}, {0, 0}}}
   end
 
   test "same-term responses do not erase a follower vote" do
@@ -146,7 +146,7 @@ defmodule Bedrock.Raft.ElectionSafetyTest do
     raft = Raft.new(:a, [:b, :c], log, Interface)
 
     raft = Raft.handle_event(raft, {:vote, 1}, :noise)
-    raft = Raft.handle_event(raft, {:append_entries_ack, 1, false, {0, 0}}, :noise)
+    raft = Raft.handle_event(raft, {:append_entries_ack, 1, false, {0, 0}, {0, 0}}, :noise)
 
     assert %Follower{term: 1, voted_for: :b} = raft.mode
     assert Log.voted_for(Raft.log(raft)) == :b

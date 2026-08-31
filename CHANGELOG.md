@@ -22,8 +22,24 @@
   matched or rejected by that request. Accordingly,
   `append_entries_ack_received` mode callbacks accept five arguments, and the
   related telemetry metadata reports `success` and `request_transaction_id`.
+- AppendEntries responses additionally carry the follower's newest local entry
+  as an advisory hint: the wire event is now
+  `{:append_entries_ack, term, success, request_transaction_id,
+  follower_newest_transaction_id}`, `append_entries_ack_received` mode
+  callbacks accept six arguments, and the ack telemetry metadata reports
+  `follower_newest_transaction_id`.
+- `Bedrock.Raft.Log` implementations must now provide
+  `previous_transaction_id/2`, returning the newest transaction id older than
+  the given id (or the initial id) in at most O(log n) time. The bundled
+  in-memory logs implement it with `:ets.prev/2`.
 
 ### Fixed
+- Rejected AppendEntries responses now reposition the leader's send cursor
+  directly to the follower's hinted position when that entry exists in the
+  leader's log, catching a lagging follower up after a single rejection
+  instead of one probe round trip per missing entry. Divergent or malformed
+  hints fall back to stepping one entry backwards, and the leader's
+  predecessor lookup no longer materializes the entire log prefix.
 - Election retries now advance the term, votes survive state reconstruction,
   and higher-term RPCs persist the new term before mode-specific handling.
 - Same-term RPC responses no longer clear an existing vote, while a repeated

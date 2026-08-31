@@ -144,7 +144,7 @@ defmodule Bedrock.Raft.Mode.FollowerTest do
       expect(MockInterface, :timer, fn _ -> &mock_cancel/0 end)
       expect(MockInterface, :leadership_changed, fn {^leader, 2} -> :ok end)
 
-      expect(MockInterface, :send_event, fn :peer_1, {:append_entries_ack, 2, true, ^t1} ->
+      expect(MockInterface, :send_event, fn :peer_1, {:append_entries_ack, 2, true, ^t1, ^t1} ->
         :ok
       end)
 
@@ -170,7 +170,7 @@ defmodule Bedrock.Raft.Mode.FollowerTest do
 
       expect(MockInterface, :send_event, fn ^leader,
                                             {:append_entries_ack, ^term, false,
-                                             ^prev_transaction_id} ->
+                                             ^prev_transaction_id, {0, 0}} ->
         :ok
       end)
 
@@ -205,7 +205,7 @@ defmodule Bedrock.Raft.Mode.FollowerTest do
       expect(MockInterface, :leadership_changed, fn {^new_leader, ^new_term} -> :ok end)
 
       expect(MockInterface, :send_event, fn ^new_leader,
-                                            {:append_entries_ack, ^new_term, true, ^t1} ->
+                                            {:append_entries_ack, ^new_term, true, ^t1, ^t1} ->
         :ok
       end)
 
@@ -235,7 +235,7 @@ defmodule Bedrock.Raft.Mode.FollowerTest do
       expect(MockInterface, :leadership_changed, fn {^leader, ^term} -> :ok end)
 
       expect(MockInterface, :send_event, fn ^leader,
-                                            {:append_entries_ack, ^term, false, {1, 99}} ->
+                                            {:append_entries_ack, ^term, false, {1, 99}, {1, 1}} ->
         :ok
       end)
 
@@ -267,7 +267,9 @@ defmodule Bedrock.Raft.Mode.FollowerTest do
       follower = Follower.new(3, log, MockInterface, :peer_0, leader)
       expect(MockInterface, :timer, fn :election -> &mock_cancel/0 end)
 
-      expect(MockInterface, :send_event, fn ^leader, {:append_entries_ack, 3, true, ^t1} ->
+      expect(MockInterface, :send_event, fn ^leader,
+                                            {:append_entries_ack, 3, true, ^t1,
+                                             ^divergent_local_tail} ->
         :ok
       end)
 
@@ -311,7 +313,7 @@ defmodule Bedrock.Raft.Mode.FollowerTest do
     end
   end
 
-  describe "append_entries_ack_received/5" do
+  describe "append_entries_ack_received/6" do
     test "becomes follower when term is higher" do
       term = 1
       log = InMemoryLog.new()
@@ -320,7 +322,7 @@ defmodule Bedrock.Raft.Mode.FollowerTest do
       follower = Follower.new(term, log, MockInterface, :peer_0)
 
       assert :become_follower =
-               Follower.append_entries_ack_received(follower, 2, true, {1, 1}, :peer_1)
+               Follower.append_entries_ack_received(follower, 2, true, {1, 1}, {1, 1}, :peer_1)
     end
 
     test "ignores when term is lower" do
@@ -331,7 +333,7 @@ defmodule Bedrock.Raft.Mode.FollowerTest do
       follower = Follower.new(term, log, MockInterface, :peer_0)
 
       assert {:ok, _} =
-               Follower.append_entries_ack_received(follower, 1, true, {1, 1}, :peer_1)
+               Follower.append_entries_ack_received(follower, 1, true, {1, 1}, {1, 1}, :peer_1)
     end
 
     test "ignores when term is equal" do
@@ -342,7 +344,14 @@ defmodule Bedrock.Raft.Mode.FollowerTest do
       follower = Follower.new(term, log, MockInterface, :peer_0)
 
       assert {:ok, ^follower} =
-               Follower.append_entries_ack_received(follower, term, false, {1, 1}, :peer_1)
+               Follower.append_entries_ack_received(
+                 follower,
+                 term,
+                 false,
+                 {1, 1},
+                 {1, 1},
+                 :peer_1
+               )
     end
   end
 
@@ -385,7 +394,8 @@ defmodule Bedrock.Raft.Mode.FollowerTest do
       expect(MockInterface, :timer, fn _ -> &mock_cancel/0 end)
       expect(MockInterface, :leadership_changed, fn {^leader, ^term} -> :ok end)
 
-      expect(MockInterface, :send_event, fn ^leader, {:append_entries_ack, ^term, true, {1, 2}} ->
+      expect(MockInterface, :send_event, fn ^leader,
+                                            {:append_entries_ack, ^term, true, {1, 2}, {1, 2}} ->
         :ok
       end)
 
@@ -444,7 +454,8 @@ defmodule Bedrock.Raft.Mode.FollowerTest do
 
       expect(MockInterface, :timer, 2, fn :election -> &mock_cancel/0 end)
 
-      expect(MockInterface, :send_event, fn ^leader, {:append_entries_ack, ^term, true, {2, 3}} ->
+      expect(MockInterface, :send_event, fn ^leader,
+                                            {:append_entries_ack, ^term, true, {2, 3}, {2, 3}} ->
         :ok
       end)
 
@@ -487,7 +498,8 @@ defmodule Bedrock.Raft.Mode.FollowerTest do
       expect(MockInterface, :timer, 2, fn :election -> &mock_cancel/0 end)
 
       expect(MockInterface, :send_event, fn ^leader,
-                                            {:append_entries_ack, ^term, false, ^initial_id} ->
+                                            {:append_entries_ack, ^term, false, ^initial_id,
+                                             ^committed_id} ->
         :ok
       end)
 
@@ -522,7 +534,8 @@ defmodule Bedrock.Raft.Mode.FollowerTest do
       expect(MockInterface, :timer, fn _ -> &mock_cancel/0 end)
       expect(MockInterface, :leadership_changed, fn {^leader, ^term} -> :ok end)
 
-      expect(MockInterface, :send_event, fn ^leader, {:append_entries_ack, ^term, true, {0, 0}} ->
+      expect(MockInterface, :send_event, fn ^leader,
+                                            {:append_entries_ack, ^term, true, {0, 0}, {0, 0}} ->
         :ok
       end)
 
@@ -556,7 +569,8 @@ defmodule Bedrock.Raft.Mode.FollowerTest do
       expect(MockInterface, :timer, fn _ -> &mock_cancel/0 end)
       expect(MockInterface, :leadership_changed, fn {^leader, ^term} -> :ok end)
 
-      expect(MockInterface, :send_event, fn ^leader, {:append_entries_ack, ^term, true, {1, 3}} ->
+      expect(MockInterface, :send_event, fn ^leader,
+                                            {:append_entries_ack, ^term, true, {1, 3}, {1, 3}} ->
         :ok
       end)
 
@@ -596,7 +610,8 @@ defmodule Bedrock.Raft.Mode.FollowerTest do
     expect(MockInterface, :timer, 2, fn :election -> &mock_cancel/0 end)
 
     expect(MockInterface, :send_event, fn ^leader,
-                                          {:append_entries_ack, ^term, true, ^request_match_id} ->
+                                          {:append_entries_ack, ^term, true, ^request_match_id,
+                                           ^newest_id} ->
       :ok
     end)
 
@@ -642,20 +657,23 @@ defmodule Bedrock.Raft.Mode.FollowerTest do
       Log.append_transactions(log, initial_id, matching_transactions ++ divergent_transactions)
 
     request_match_id = Log.new_id(log, 1, 10)
+    divergent_tail_id = Log.new_id(log, 2, 20)
     leader_commit_id = Log.new_id(log, term, 20)
 
     expect(MockInterface, :timer, 3, fn :election -> &mock_cancel/0 end)
     expect(MockInterface, :leadership_changed, fn {^leader, ^term} -> :ok end)
 
     expect(MockInterface, :send_event, fn ^leader,
-                                          {:append_entries_ack, ^term, true, ^request_match_id} ->
+                                          {:append_entries_ack, ^term, true, ^request_match_id,
+                                           ^divergent_tail_id} ->
       :ok
     end)
 
     expect(MockInterface, :consensus_reached, fn _, ^request_match_id, :behind -> :ok end)
 
     expect(MockInterface, :send_event, fn ^leader,
-                                          {:append_entries_ack, ^term, true, ^leader_commit_id} ->
+                                          {:append_entries_ack, ^term, true, ^leader_commit_id,
+                                           ^leader_commit_id} ->
       :ok
     end)
 

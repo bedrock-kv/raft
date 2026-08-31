@@ -22,6 +22,7 @@ defmodule Bedrock.Raft.Mode do
               Raft.election_term(),
               success :: boolean(),
               request_transaction_id :: Raft.transaction_id(),
+              follower_newest_transaction_id :: Raft.transaction_id(),
               follower :: Raft.peer()
             ) :: {:ok, any()} | :become_follower
 

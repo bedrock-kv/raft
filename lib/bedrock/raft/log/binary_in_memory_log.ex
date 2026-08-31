@@ -105,6 +105,14 @@ defmodule Bedrock.Raft.Log.BinaryInMemoryLog do
     def has_transaction_id?(t, transaction_id), do: :ets.member(t.transactions, transaction_id)
 
     @impl true
+    def previous_transaction_id(t, transaction_id) do
+      case :ets.prev(t.transactions, transaction_id) do
+        :"$end_of_table" -> initial_transaction_id(t)
+        previous_transaction_id -> previous_transaction_id
+      end
+    end
+
+    @impl true
     def transactions_to(t, :newest),
       do: transactions_from(t, initial_transaction_id(t), newest_transaction_id(t))
 

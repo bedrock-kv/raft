@@ -67,7 +67,7 @@ defmodule Bedrock.Raft.Mode.Leader do
     only: [
       track_consensus_reached: 1,
       track_transaction_added: 2,
-      track_append_entries_ack_received: 4,
+      track_append_entries_ack_received: 5,
       track_heartbeat: 1,
       track_append_entries_sent: 5
     ]
@@ -204,25 +204,59 @@ defmodule Bedrock.Raft.Mode.Leader do
           Raft.election_term(),
           success :: boolean(),
           request_transaction_id :: Raft.transaction_id(),
+          follower_newest_transaction_id :: Raft.transaction_id(),
           follower :: Raft.peer()
         ) ::
           {:ok, t()}
-  def append_entries_ack_received(t, term, success, request_transaction_id, follower)
+  def append_entries_ack_received(
+        t,
+        term,
+        success,
+        request_transaction_id,
+        follower_newest_transaction_id,
+        follower
+      )
       when term == t.term do
     if follower in t.peers do
-      track_append_entries_ack_received(term, follower, success, request_transaction_id)
+      track_append_entries_ack_received(
+        term,
+        follower,
+        success,
+        request_transaction_id,
+        follower_newest_transaction_id
+      )
 
-      handle_append_entries_response(t, success, request_transaction_id, follower)
+      handle_append_entries_response(
+        t,
+        success,
+        request_transaction_id,
+        follower_newest_transaction_id,
+        follower
+      )
       |> then(&{:ok, &1})
     else
       {:ok, t}
     end
   end
 
-  def append_entries_ack_received(t, term, _, _, _) when term > t.term, do: become_follower(t)
-  def append_entries_ack_received(t, _, _, _, _), do: {:ok, t}
+  def append_entries_ack_received(t, term, _, _, _, _) when term > t.term,
+    do: become_follower(t)
 
-  defp handle_append_entries_response(t, true, matched_transaction_id, follower) do
+  def append_entries_ack_received(t, _, _, _, _, _), do: {:ok, t}
+
+  # SAFETY INVARIANT: the follower's newest-entry hint may only ever
+  # reposition the send cursor (a probe position that the next AppendEntries
+  # consistency check validates). It must NEVER feed matchIndex,
+  # record_success, or commit decisions -- those advance exclusively on
+  # acknowledged request ids that exist in our own log, which is why the
+  # success clause ignores the hint entirely.
+  defp handle_append_entries_response(
+         t,
+         true,
+         matched_transaction_id,
+         _follower_newest_transaction_id,
+         follower
+       ) do
     if Log.has_transaction_id?(t.log, matched_transaction_id) do
       FollowerTracking.record_success(t.follower_tracking, follower, matched_transaction_id)
 
@@ -235,7 +269,13 @@ defmodule Bedrock.Raft.Mode.Leader do
     end
   end
 
-  defp handle_append_entries_response(t, false, rejected_prev_transaction_id, follower) do
+  defp handle_append_entries_response(
+         t,
+         false,
+         rejected_prev_transaction_id,
+         follower_newest_transaction_id,
+         follower
+       ) do
     follower_match_transaction_id =
       FollowerTracking.match_transaction_id(t.follower_tracking, follower)
 
@@ -247,7 +287,8 @@ defmodule Bedrock.Raft.Mode.Leader do
         t
 
       true ->
-        retry_transaction_id = previous_transaction_id(t.log, rejected_prev_transaction_id)
+        retry_transaction_id =
+          retry_transaction_id(t, rejected_prev_transaction_id, follower_newest_transaction_id)
 
         FollowerTracking.record_rejection(t.follower_tracking, follower, retry_transaction_id)
 
@@ -289,13 +330,17 @@ defmodule Bedrock.Raft.Mode.Leader do
     end
   end
 
-  defp previous_transaction_id(log, transaction_id) do
-    log
-    |> Log.transactions_from(Log.initial_transaction_id(log), transaction_id)
-    |> Enum.reverse()
-    |> case do
-      [{^transaction_id, _}, {previous_transaction_id, _} | _] -> previous_transaction_id
-      [{^transaction_id, _}] -> Log.initial_transaction_id(log)
+  # A valid hint is always older than the rejected prev entry: by the Log
+  # Matching property, if both we and the follower hold the hint entry and
+  # prev <= hint, the follower would also hold prev and would not have
+  # rejected. The guard is defense in depth against malformed responses; when
+  # the hint is unusable we fall back to stepping one entry backwards.
+  defp retry_transaction_id(t, rejected_prev_transaction_id, follower_newest_transaction_id) do
+    if Log.has_transaction_id?(t.log, follower_newest_transaction_id) and
+         follower_newest_transaction_id < rejected_prev_transaction_id do
+      follower_newest_transaction_id
+    else
+      Log.previous_transaction_id(t.log, rejected_prev_transaction_id)
     end
   end
 

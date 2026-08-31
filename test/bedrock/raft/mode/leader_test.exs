@@ -238,14 +238,14 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
     end
   end
 
-  describe "append_entries_ack_received/5" do
+  describe "append_entries_ack_received/6" do
     test "ignores responses from peers outside the cluster" do
       expect(MockInterface, :timestamp_in_ms, fn -> 1000 end)
       expect(MockInterface, :timer, fn :heartbeat -> &mock_cancel/0 end)
       leader = Leader.new(2, 0, [], InMemoryLog.new(), MockInterface)
 
       assert {:ok, ^leader} =
-               Leader.append_entries_ack_received(leader, 2, true, {0, 0}, :unknown_peer)
+               Leader.append_entries_ack_received(leader, 2, true, {0, 0}, {0, 0}, :unknown_peer)
     end
 
     test "does not directly commit an entry from a previous term" do
@@ -269,6 +269,7 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
           leader,
           2,
           true,
+          previous_term_transaction_id,
           previous_term_transaction_id,
           :peer_1
         )
@@ -313,6 +314,7 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
           2,
           true,
           current_term_transaction_id,
+          current_term_transaction_id,
           :peer_1
         )
 
@@ -342,7 +344,7 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
         :ok
       end)
 
-      {:ok, leader} = Leader.append_entries_ack_received(leader, 2, false, t2, :peer_1)
+      {:ok, leader} = Leader.append_entries_ack_received(leader, 2, false, t2, t2, :peer_1)
 
       assert FollowerTracking.match_transaction_id(leader.follower_tracking, :peer_1) == t0
 
@@ -352,7 +354,7 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
         :ok
       end)
 
-      {:ok, leader} = Leader.append_entries_ack_received(leader, 2, false, t1, :peer_1)
+      {:ok, leader} = Leader.append_entries_ack_received(leader, 2, false, t1, t1, :peer_1)
 
       assert FollowerTracking.match_transaction_id(leader.follower_tracking, :peer_1) == t0
 
@@ -360,7 +362,7 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
 
       expect(MockInterface, :send_event, fn :peer_1, {:append_entries, 2, ^t2, [], ^t2} -> :ok end)
 
-      {:ok, leader} = Leader.append_entries_ack_received(leader, 2, true, t2, :peer_1)
+      {:ok, leader} = Leader.append_entries_ack_received(leader, 2, true, t2, t2, :peer_1)
 
       assert FollowerTracking.match_transaction_id(leader.follower_tracking, :peer_1) == t2
       assert Log.newest_safe_transaction_id(leader.log) == t2
@@ -380,6 +382,7 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
           2,
           true,
           nonexistent_transaction_id,
+          nonexistent_transaction_id,
           :peer_1
         )
 
@@ -398,8 +401,8 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
       expect(MockInterface, :timer, fn :heartbeat -> &mock_cancel/0 end)
       leader = Leader.new(2, 2, [:peer_1, :peer_2], log, MockInterface)
 
-      {:ok, leader} = Leader.append_entries_ack_received(leader, 2, true, {2, 3}, :peer_1)
-      {:ok, leader} = Leader.append_entries_ack_received(leader, 2, true, {2, 1}, :peer_1)
+      {:ok, leader} = Leader.append_entries_ack_received(leader, 2, true, {2, 3}, {2, 3}, :peer_1)
+      {:ok, leader} = Leader.append_entries_ack_received(leader, 2, true, {2, 1}, {2, 1}, :peer_1)
 
       assert FollowerTracking.match_transaction_id(leader.follower_tracking, :peer_1) == {2, 3}
 
@@ -428,7 +431,7 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
         :ok
       end)
 
-      {:ok, leader} = Leader.append_entries_ack_received(leader, 2, true, t0, :peer_1)
+      {:ok, leader} = Leader.append_entries_ack_received(leader, 2, true, t0, t0, :peer_1)
 
       expect(MockInterface, :consensus_reached, fn _, {2, 10}, :behind -> :ok end)
 
@@ -438,7 +441,7 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
       end)
 
       {:ok, leader} =
-        Leader.append_entries_ack_received(leader, 2, true, {2, 10}, :peer_1)
+        Leader.append_entries_ack_received(leader, 2, true, {2, 10}, {2, 10}, :peer_1)
 
       assert FollowerTracking.match_transaction_id(leader.follower_tracking, :peer_1) ==
                {2, 10}
@@ -507,7 +510,7 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
         :ok
       end)
 
-      {:ok, leader} = Leader.append_entries_ack_received(leader, 2, true, {2, 1}, :peer_1)
+      {:ok, leader} = Leader.append_entries_ack_received(leader, 2, true, {2, 1}, {2, 1}, :peer_1)
 
       assert FollowerTracking.send_cursor_transaction_id(leader.follower_tracking, :peer_1) ==
                {2, 3}
@@ -530,7 +533,8 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
         :ok
       end)
 
-      {:ok, leader} = Leader.append_entries_ack_received(leader, 2, false, {2, 3}, :peer_1)
+      {:ok, leader} =
+        Leader.append_entries_ack_received(leader, 2, false, {2, 3}, {2, 3}, :peer_1)
 
       assert FollowerTracking.send_cursor_transaction_id(leader.follower_tracking, :peer_1) ==
                {2, 3}
@@ -541,7 +545,8 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
         :ok
       end)
 
-      {:ok, leader} = Leader.append_entries_ack_received(leader, 2, false, {2, 2}, :peer_1)
+      {:ok, leader} =
+        Leader.append_entries_ack_received(leader, 2, false, {2, 2}, {2, 2}, :peer_1)
 
       expect(MockInterface, :timestamp_in_ms, fn -> 1010 end)
       expect(MockInterface, :consensus_reached, fn _, {2, 3}, :latest -> :ok end)
@@ -550,7 +555,7 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
         :ok
       end)
 
-      {:ok, leader} = Leader.append_entries_ack_received(leader, 2, true, {2, 3}, :peer_1)
+      {:ok, leader} = Leader.append_entries_ack_received(leader, 2, true, {2, 3}, {2, 3}, :peer_1)
 
       assert FollowerTracking.match_transaction_id(leader.follower_tracking, :peer_1) == {2, 3}
       assert Log.newest_safe_transaction_id(leader.log) == {2, 3}
@@ -761,6 +766,76 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
 
       assert txn_id == {1, 1}
       assert leader.id_sequence == 1
+    end
+  end
+
+  describe "rejection hints" do
+    test "a far-behind follower is repositioned by a single rejection" do
+      t0 = {0, 0}
+      transactions = for index <- 1..25, do: {{2, index}, index}
+      first_batch = Enum.take(transactions, 10)
+
+      {:ok, log} = InMemoryLog.new() |> Log.append_transactions(t0, transactions)
+
+      expect(MockInterface, :timestamp_in_ms, 2, fn -> 1000 end)
+      expect(MockInterface, :timer, fn :heartbeat -> &mock_cancel/0 end)
+      leader = Leader.new(2, 1, [:peer_1], log, MockInterface)
+
+      # A heartbeat probe at the newest entry was rejected by an empty
+      # follower. Its hint repositions the cursor to the log start in one
+      # round trip instead of twenty-five.
+      expect(MockInterface, :send_event, fn :peer_1,
+                                            {:append_entries, 2, ^t0, ^first_batch, ^t0} ->
+        :ok
+      end)
+
+      {:ok, leader} = Leader.append_entries_ack_received(leader, 2, false, {2, 25}, t0, :peer_1)
+
+      assert FollowerTracking.send_cursor_transaction_id(leader.follower_tracking, :peer_1) ==
+               {2, 10}
+
+      assert FollowerTracking.match_transaction_id(leader.follower_tracking, :peer_1) == t0
+    end
+
+    test "a hint absent from the leader's log falls back to one-step backtracking" do
+      transactions = for index <- 1..3, do: {{2, index}, index}
+      {:ok, log} = InMemoryLog.new() |> Log.append_transactions({0, 0}, transactions)
+
+      expect(MockInterface, :timestamp_in_ms, 2, fn -> 1000 end)
+      expect(MockInterface, :timer, fn :heartbeat -> &mock_cancel/0 end)
+      leader = Leader.new(2, 1, [:peer_1], log, MockInterface)
+
+      expect(MockInterface, :send_event, fn :peer_1,
+                                            {:append_entries, 2, {2, 2}, [{{2, 3}, 3}], {0, 0}} ->
+        :ok
+      end)
+
+      {:ok, leader} =
+        Leader.append_entries_ack_received(leader, 2, false, {2, 3}, {1, 2}, :peer_1)
+
+      assert FollowerTracking.send_cursor_transaction_id(leader.follower_tracking, :peer_1) ==
+               {2, 3}
+    end
+
+    test "a hint at or beyond the rejected entry is ignored" do
+      transactions = for index <- 1..3, do: {{2, index}, index}
+      {:ok, log} = InMemoryLog.new() |> Log.append_transactions({0, 0}, transactions)
+
+      expect(MockInterface, :timestamp_in_ms, 2, fn -> 1000 end)
+      expect(MockInterface, :timer, fn :heartbeat -> &mock_cancel/0 end)
+      leader = Leader.new(2, 1, [:peer_1], log, MockInterface)
+
+      expect(MockInterface, :send_event, fn :peer_1,
+                                            {:append_entries, 2, {2, 1},
+                                             [{{2, 2}, 2}, {{2, 3}, 3}], {0, 0}} ->
+        :ok
+      end)
+
+      {:ok, leader} =
+        Leader.append_entries_ack_received(leader, 2, false, {2, 2}, {2, 3}, :peer_1)
+
+      assert FollowerTracking.send_cursor_transaction_id(leader.follower_tracking, :peer_1) ==
+               {2, 3}
     end
   end
 end

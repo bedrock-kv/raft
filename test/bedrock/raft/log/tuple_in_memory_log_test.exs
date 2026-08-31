@@ -264,4 +264,41 @@ defmodule Bedrock.Raft.Log.TupleInMemoryLogTest do
       assert Log.newest_safe_transaction_id(log) == transaction_2_id
     end
   end
+
+  describe "previous_transaction_id/2" do
+    test "returns the preceding transaction ID", %{log: log} do
+      {:ok, log} =
+        Log.append_transactions(log, TransactionID.new(0, 0), [
+          {TransactionID.new(1, 1), :data_1},
+          {TransactionID.new(1, 2), :data_2},
+          {TransactionID.new(1, 3), :data_3}
+        ])
+
+      assert Log.previous_transaction_id(log, TransactionID.new(1, 2)) ==
+               TransactionID.new(1, 1)
+    end
+
+    test "returns the initial ID for the first transaction and the initial ID", %{log: log} do
+      initial_id = Log.initial_transaction_id(log)
+
+      {:ok, log} = Log.append_transactions(log, initial_id, [{TransactionID.new(1, 1), :data}])
+
+      assert Log.previous_transaction_id(log, TransactionID.new(1, 1)) == initial_id
+      assert Log.previous_transaction_id(log, initial_id) == initial_id
+    end
+
+    test "returns the newest earlier transaction for an ID that is not present", %{log: log} do
+      {:ok, log} =
+        Log.append_transactions(log, TransactionID.new(0, 0), [
+          {TransactionID.new(1, 1), :data_1},
+          {TransactionID.new(1, 3), :data_3}
+        ])
+
+      assert Log.previous_transaction_id(log, TransactionID.new(1, 2)) ==
+               TransactionID.new(1, 1)
+
+      assert Log.previous_transaction_id(log, TransactionID.new(9, 9)) ==
+               TransactionID.new(1, 3)
+    end
+  end
 end

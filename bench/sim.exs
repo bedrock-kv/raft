@@ -45,7 +45,7 @@ defmodule Sim do
 
   defp classify({:append_entries, _t, _p, txns, _c}), do: {:ae, length(txns)}
 
-  defp classify({:append_entries_ack, _t, s, _r}) when is_boolean(s),
+  defp classify({:append_entries_ack, _t, s, _r, _hint}) when is_boolean(s),
     do: if(s, do: :ack_ok, else: :ack_fail)
 
   defp classify(_), do: :other

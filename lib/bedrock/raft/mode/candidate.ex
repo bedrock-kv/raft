@@ -177,12 +177,13 @@ defmodule Bedrock.Raft.Mode.Candidate do
           Raft.election_term(),
           success :: boolean(),
           request_transaction_id :: Raft.transaction_id(),
+          follower_newest_transaction_id :: Raft.transaction_id(),
           follower :: Raft.peer()
         ) :: {:ok, any()} | :become_follower
-  def append_entries_ack_received(t, term, _, _, _) when term > t.term,
+  def append_entries_ack_received(t, term, _, _, _, _) when term > t.term,
     do: become_follower(t)
 
-  def append_entries_ack_received(t, _, _, _, _), do: {:ok, t}
+  def append_entries_ack_received(t, _, _, _, _, _), do: {:ok, t}
 
   @doc """
   A ping has been received. If the term is greater than or equal to our term,

@@ -123,4 +123,15 @@ defprotocol Bedrock.Raft.Log do
   @spec save_election_state(t(), Raft.election_term(), Raft.peer() | nil) ::
           {:ok, t()} | {:error, :already_voted | :stale_term}
   def save_election_state(t, term, voted_for)
+
+  @doc """
+  Get the id of the newest transaction in the log that is older than the
+  given transaction id, or the initial transaction id when no such
+  transaction exists (including when the given id is the initial id itself).
+
+  Implementations should answer in at most O(log n) time; the leader consults
+  this on every rejected AppendEntries response to backtrack its send cursor.
+  """
+  @spec previous_transaction_id(t(), Raft.transaction_id()) :: Raft.transaction_id()
+  def previous_transaction_id(t, transaction_id)
 end

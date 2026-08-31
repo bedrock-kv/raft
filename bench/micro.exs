@@ -78,7 +78,7 @@ defmodule Micro do
       :ets.delete(tl.transactions)
     end
 
-    IO.puts("\n== leader-side cost per REJECTION ack (previous_transaction_id + probe send) ==")
+    IO.puts("\n== leader-side cost per REJECTION ack (hint jump to empty-follower position) ==")
     IO.puts("N        us_per_rejection")
 
     for n <- [1_000, 5_000, 10_000, 20_000, 40_000] do
@@ -89,7 +89,7 @@ defmodule Micro do
         time_us(
           fn ->
             {:ok, _} =
-              Bedrock.Raft.Mode.Leader.append_entries_ack_received(leader, 1, false, {1, n}, :b)
+              Bedrock.Raft.Mode.Leader.append_entries_ack_received(leader, 1, false, {1, n}, {0, 0}, :b)
 
             flush()
           end,
@@ -97,6 +97,44 @@ defmodule Micro do
         )
 
       IO.puts(String.pad_trailing("#{n}", 9) <> "#{t}")
+      :ets.delete(tl.transactions)
+    end
+
+    IO.puts("\n== leader-side cost per REJECTION ack (fallback: hint not in our log) ==")
+    IO.puts("N        us_per_rejection")
+
+    for n <- [1_000, 5_000, 10_000, 20_000, 40_000] do
+      tl = build_tuple_log(n)
+      leader = Bedrock.Raft.Mode.Leader.new(1, 1, [:b, :c], tl, Micro.Iface)
+
+      t =
+        time_us(
+          fn ->
+            {:ok, _} =
+              Bedrock.Raft.Mode.Leader.append_entries_ack_received(
+                leader,
+                1,
+                false,
+                {1, n},
+                {9, 9},
+                :b
+              )
+
+            flush()
+          end,
+          20
+        )
+
+      IO.puts(String.pad_trailing("#{n}", 9) <> "#{t}")
+      :ets.delete(tl.transactions)
+    end
+
+    IO.puts("\n== Log.previous_transaction_id (tuple, near-end key) ==")
+
+    for n <- [10_000, 200_000] do
+      tl = build_tuple_log(n)
+      t = time_us(fn -> Log.previous_transaction_id(tl, {1, n - 3}) end, 1000)
+      IO.puts("N=#{n}  #{t} us")
       :ets.delete(tl.transactions)
     end
 
@@ -109,7 +147,7 @@ defmodule Micro do
       leader = Bedrock.Raft.Mode.Leader.new(1, 1, [:b, :c], tl, Micro.Iface)
 
       {:ok, leader} =
-        Bedrock.Raft.Mode.Leader.append_entries_ack_received(leader, 1, true, {1, n}, :b)
+        Bedrock.Raft.Mode.Leader.append_entries_ack_received(leader, 1, true, {1, n}, {1, n}, :b)
 
       flush()
 
@@ -117,7 +155,7 @@ defmodule Micro do
         time_us(
           fn ->
             {:ok, _} =
-              Bedrock.Raft.Mode.Leader.append_entries_ack_received(leader, 1, true, {1, n}, :b)
+              Bedrock.Raft.Mode.Leader.append_entries_ack_received(leader, 1, true, {1, n}, {1, n}, :b)
 
             flush()
           end,
