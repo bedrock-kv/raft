@@ -20,7 +20,8 @@ defmodule Bedrock.Raft.Mode do
   @callback append_entries_ack_received(
               any(),
               Raft.election_term(),
-              newest_transaction_id :: Raft.transaction_id(),
+              success :: boolean(),
+              request_transaction_id :: Raft.transaction_id(),
               follower :: Raft.peer()
             ) :: {:ok, any()} | :become_follower
 

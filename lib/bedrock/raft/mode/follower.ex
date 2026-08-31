@@ -41,7 +41,7 @@ defmodule Bedrock.Raft.Mode.Follower do
       track_consensus_reached: 1,
       track_vote_sent: 2,
       track_append_entries_received: 5,
-      track_append_entries_ack_sent: 3
+      track_append_entries_ack_sent: 4
     ]
 
   @type t :: %__MODULE__{
@@ -138,11 +138,14 @@ defmodule Bedrock.Raft.Mode.Follower do
   @spec append_entries_ack_received(
           t(),
           Raft.election_term(),
-          newest_transaction_id :: Raft.transaction_id(),
+          success :: boolean(),
+          request_transaction_id :: Raft.transaction_id(),
           follower :: Raft.peer()
         ) :: {:ok, t()} | :become_follower
-  def append_entries_ack_received(t, term, _, _) when term >= t.term, do: t |> become_follower()
-  def append_entries_ack_received(t, _, _, _), do: {:ok, t}
+  def append_entries_ack_received(t, term, _, _, _) when term > t.term,
+    do: t |> become_follower()
+
+  def append_entries_ack_received(t, _, _, _, _), do: {:ok, t}
 
   @doc """
   A ping has been received. If the term is greater than our term, then we will
@@ -185,20 +188,31 @@ defmodule Bedrock.Raft.Mode.Follower do
         |> note_change_in_leadership_if_necessary(from, term)
         |> try_to_append_transactions(prev_transaction_id, transactions)
         |> try_to_reach_consensus(commit_transaction_id)
-        |> send_append_entries_ack()
+        |> send_append_entries_ack(
+          true,
+          request_match_transaction_id(prev_transaction_id, transactions)
+        )
         |> then(&{:ok, &1})
 
       :invalid ->
-        # Send ack but don't update log - leader will backtrack
         t
         |> reset_timer()
         |> note_change_in_leadership_if_necessary(from, term)
-        |> send_append_entries_ack()
+        |> send_append_entries_ack(false, prev_transaction_id)
         |> then(&{:ok, &1})
     end
   end
 
-  def append_entries_received(t, _, _, _, _, _), do: {:ok, t}
+  def append_entries_received(t, _term, prev_transaction_id, _transactions, _commit, from) do
+    send_append_entries_ack(t, from, false, prev_transaction_id)
+    {:ok, t}
+  end
+
+  defp request_match_transaction_id(prev_transaction_id, []), do: prev_transaction_id
+
+  defp request_match_transaction_id(_prev_transaction_id, transactions) do
+    transactions |> List.last() |> elem(0)
+  end
 
   @impl true
   @spec timer_ticked(t(), :election) :: :become_candidate
@@ -300,16 +314,21 @@ defmodule Bedrock.Raft.Mode.Follower do
     :become_candidate
   end
 
-  @spec send_append_entries_ack(t()) :: t()
-  defp send_append_entries_ack(t) when t.leader == :undecided, do: t
+  @spec send_append_entries_ack(t(), boolean(), Raft.transaction_id()) :: t()
+  defp send_append_entries_ack(t, success, request_transaction_id)
+       when t.leader != :undecided do
+    send_append_entries_ack(t, t.leader, success, request_transaction_id)
+  end
 
-  defp send_append_entries_ack(t) do
-    newest_transaction_id = Log.newest_transaction_id(t.log)
-    track_append_entries_ack_sent(t.term, t.me, newest_transaction_id)
+  defp send_append_entries_ack(t, _success, _request_transaction_id), do: t
+
+  @spec send_append_entries_ack(t(), Raft.peer(), boolean(), Raft.transaction_id()) :: t()
+  defp send_append_entries_ack(t, leader, success, request_transaction_id) do
+    track_append_entries_ack_sent(t.term, leader, success, request_transaction_id)
 
     t.interface.send_event(
-      t.leader,
-      {:append_entries_ack, t.term, newest_transaction_id}
+      leader,
+      {:append_entries_ack, t.term, success, request_transaction_id}
     )
 
     t

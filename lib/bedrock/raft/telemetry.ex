@@ -95,26 +95,33 @@ defmodule Bedrock.Raft.Telemetry do
     })
   end
 
-  @spec track_append_entries_ack_sent(Raft.election_term(), Raft.peer(), Raft.transaction_id()) ::
-          :ok
-  def track_append_entries_ack_sent(term, leader, newest_transaction_id) do
+  @spec track_append_entries_ack_sent(
+          Raft.election_term(),
+          Raft.peer(),
+          boolean(),
+          Raft.transaction_id()
+        ) :: :ok
+  def track_append_entries_ack_sent(term, leader, success, request_transaction_id) do
     :telemetry.execute([:bedrock, :raft, :append_entries_ack_sent], %{at: now()}, %{
       term: term,
       leader: leader,
-      newest_transaction_id: newest_transaction_id
+      success: success,
+      request_transaction_id: request_transaction_id
     })
   end
 
   @spec track_append_entries_ack_received(
           Raft.election_term(),
           Raft.peer(),
+          boolean(),
           Raft.transaction_id()
         ) :: :ok
-  def track_append_entries_ack_received(term, follower, newest_transaction_id) do
+  def track_append_entries_ack_received(term, follower, success, request_transaction_id) do
     :telemetry.execute([:bedrock, :raft, :append_entries_ack_received], %{at: now()}, %{
       term: term,
       follower: follower,
-      newest_transaction_id: newest_transaction_id
+      success: success,
+      request_transaction_id: request_transaction_id
     })
   end
 

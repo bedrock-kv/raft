@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- AppendEntries responses now include an explicit success flag and the entry
+  matched or rejected by that request. Accordingly,
+  `append_entries_ack_received` mode callbacks accept five arguments, and the
+  related telemetry metadata reports `success` and `request_transaction_id`.
+
+### Fixed
+- Rejected AppendEntries requests now backtrack an independent replication
+  cursor without advancing `matchIndex`; delayed responses cannot regress
+  acknowledged progress, and successful bounded batches continue immediately.
+
 ## [0.9.8] - 2026-08-30
 
 ### Changed

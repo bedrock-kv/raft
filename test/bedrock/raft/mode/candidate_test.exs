@@ -145,7 +145,7 @@ defmodule Bedrock.Raft.Mode.CandidateTest do
     end
   end
 
-  describe "append_entries_ack_received/4" do
+  describe "append_entries_ack_received/5" do
     setup %{log: log} do
       expect(MockInterface, :send_event, 2, fn _, {:request_vote, 1, {0, 0}} -> :ok end)
       expect(MockInterface, :timer, fn :election -> &mock_cancel/0 end)
@@ -155,11 +155,17 @@ defmodule Bedrock.Raft.Mode.CandidateTest do
 
     test "becomes follower when term is higher", %{candidate: candidate} do
       assert :become_follower =
-               Candidate.append_entries_ack_received(candidate, 2, {1, 1}, :peer_1)
+               Candidate.append_entries_ack_received(candidate, 2, true, {1, 1}, :peer_1)
     end
 
     test "ignores when term is lower", %{candidate: candidate} do
-      assert {:ok, _} = Candidate.append_entries_ack_received(candidate, 0, {1, 1}, :peer_1)
+      assert {:ok, _} =
+               Candidate.append_entries_ack_received(candidate, 0, true, {1, 1}, :peer_1)
+    end
+
+    test "ignores when term is equal", %{candidate: candidate} do
+      assert {:ok, ^candidate} =
+               Candidate.append_entries_ack_received(candidate, 1, false, {1, 1}, :peer_1)
     end
   end
 
