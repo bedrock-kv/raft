@@ -13,12 +13,19 @@
   writes return `{:error, :stale_term}`.
 - `Bedrock.Raft.Mode.Candidate.new/5` is now `new/6` and accepts the local peer
   identity as its first argument so the candidate's self-vote is explicit.
+- AppendEntries responses now include an explicit success flag and the entry
+  matched or rejected by that request. Accordingly,
+  `append_entries_ack_received` mode callbacks accept five arguments, and the
+  related telemetry metadata reports `success` and `request_transaction_id`.
 
 ### Fixed
 - Election retries now advance the term, votes survive state reconstruction,
   and higher-term RPCs persist the new term before mode-specific handling.
 - Same-term RPC responses no longer clear an existing vote, while a repeated
   RequestVote from the already-selected candidate resends the vote response.
+- Rejected AppendEntries requests now backtrack an independent replication
+  cursor without advancing `matchIndex`; delayed responses cannot regress
+  acknowledged progress, and successful bounded batches continue immediately.
 
 ## [0.9.8] - 2026-08-30
 

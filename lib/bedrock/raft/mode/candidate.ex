@@ -167,19 +167,22 @@ defmodule Bedrock.Raft.Mode.Candidate do
   def add_transaction(_, _), do: {:error, :not_leader}
 
   @doc """
-  An append entries ack has been received. If the term is greater than or equal
-  to our term, then we will cancel any outstanding timers and signal that a new
+  An append entries ack has been received. If the term is greater than our
+  term, then we will cancel any outstanding timers and signal that a new
   leader has been elected. Otherwise, we'll ignore the it.
   """
   @impl true
   @spec append_entries_ack_received(
           any(),
           Raft.election_term(),
-          newest_transaction_id :: Raft.transaction_id(),
+          success :: boolean(),
+          request_transaction_id :: Raft.transaction_id(),
           follower :: Raft.peer()
         ) :: {:ok, any()} | :become_follower
-  def append_entries_ack_received(t, term, _, _) when term > t.term, do: become_follower(t)
-  def append_entries_ack_received(t, _, _, _), do: {:ok, t}
+  def append_entries_ack_received(t, term, _, _, _) when term > t.term,
+    do: become_follower(t)
+
+  def append_entries_ack_received(t, _, _, _, _), do: {:ok, t}
 
   @doc """
   A ping has been received. If the term is greater than or equal to our term,

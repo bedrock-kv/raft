@@ -1,10 +1,9 @@
 defmodule Bedrock.Raft.Mode.Leader.FollowerTracking do
   @moduledoc """
-  The FollowerTracking module is responsible for keeping track of the state of
-  followers. This includes the last transaction id that was sent to a follower,
-  the newest transaction id that the follower has acknowledged, and the newest
-  transaction id that a quorum of followers has acknowledged. This information
-  is used to determine the commit index.
+  The FollowerTracking module keeps the replication cursor and acknowledged
+  match position for each follower separate. The cursor may move backwards
+  after a rejection; the match position only moves forwards after a successful
+  response.
   """
   alias Bedrock.Raft
 
@@ -23,6 +22,7 @@ defmodule Bedrock.Raft.Mode.Leader.FollowerTracking do
           followers :: [Raft.peer()],
           opts :: [
             initial_transaction_id: Raft.transaction_id(),
+            initial_send_cursor_transaction_id: Raft.transaction_id(),
             timestamp_fn: timestamp_fn()
           ]
         ) :: t()
@@ -33,11 +33,16 @@ defmodule Bedrock.Raft.Mode.Leader.FollowerTracking do
     }
 
     initial_transaction_id = opts[:initial_transaction_id] || :unknown
+
+    initial_send_cursor_transaction_id =
+      opts[:initial_send_cursor_transaction_id] || initial_transaction_id
+
     now = timestamp(t)
 
     :ets.insert(
       t.table,
-      followers |> Enum.map(&{&1, initial_transaction_id, initial_transaction_id, now})
+      followers
+      |> Enum.map(&{&1, initial_send_cursor_transaction_id, initial_transaction_id, now})
     )
 
     t
@@ -46,22 +51,22 @@ defmodule Bedrock.Raft.Mode.Leader.FollowerTracking do
   @spec timestamp(t()) :: integer()
   def timestamp(%{timestamp_fn: timestamp_fn}), do: timestamp_fn.()
 
-  @spec last_sent_transaction_id(t(), Raft.peer()) :: Raft.transaction_id()
-  def last_sent_transaction_id(t, follower) do
+  @spec send_cursor_transaction_id(t(), Raft.peer()) :: Raft.transaction_id()
+  def send_cursor_transaction_id(t, follower) do
     t.table
     |> :ets.lookup(follower)
     |> case do
-      [{^follower, last_sent_transaction_id, _, _}] -> last_sent_transaction_id
+      [{^follower, send_cursor_transaction_id, _, _}] -> send_cursor_transaction_id
       [] -> raise "follower not found: #{inspect(follower)}"
     end
   end
 
-  @spec newest_transaction_id(t(), Raft.peer()) :: Raft.transaction_id()
-  def newest_transaction_id(t, follower) do
+  @spec match_transaction_id(t(), Raft.peer()) :: Raft.transaction_id()
+  def match_transaction_id(t, follower) do
     t.table
     |> :ets.lookup(follower)
     |> case do
-      [{^follower, _, newest_transaction_id, _}] -> newest_transaction_id
+      [{^follower, _, match_transaction_id, _}] -> match_transaction_id
       [] -> raise "follower not found: #{inspect(follower)}"
     end
   end
@@ -95,20 +100,40 @@ defmodule Bedrock.Raft.Mode.Leader.FollowerTracking do
     end
   end
 
-  @spec update_last_sent_transaction_id(t(), Raft.peer(), Raft.transaction_id()) :: t()
-  def update_last_sent_transaction_id(t, follower, last_transaction_id_sent) do
-    t.table |> :ets.update_element(follower, {2, last_transaction_id_sent})
+  @doc """
+  Record successful replication through `match_transaction_id`.
+
+  Both the match position and cursor are monotonic on success, so a delayed
+  response for an older request cannot regress either value.
+  """
+  @spec record_success(t(), Raft.peer(), Raft.transaction_id()) :: t()
+  def record_success(t, follower, match_transaction_id) do
+    now = timestamp(t)
+
+    [{^follower, send_cursor_transaction_id, old_match_transaction_id, _}] =
+      :ets.lookup(t.table, follower)
+
+    :ets.update_element(t.table, follower, [
+      {2, max(send_cursor_transaction_id, match_transaction_id)},
+      {3, max(old_match_transaction_id, match_transaction_id)},
+      {4, now}
+    ])
+
     t
   end
 
-  @spec update_newest_transaction_id(t(), Raft.peer(), Raft.transaction_id()) :: t()
-  def update_newest_transaction_id(t, follower, newest_transaction_id) do
+  @doc """
+  Move the replication cursor backwards after a rejection without changing the
+  acknowledged match position. A delayed rejection cannot move a cursor that
+  has already backtracked even farther forwards again.
+  """
+  @spec record_rejection(t(), Raft.peer(), Raft.transaction_id()) :: t()
+  def record_rejection(t, follower, retry_transaction_id) do
     now = timestamp(t)
-    # Update both sent and acknowledged transaction IDs atomically
-    t.table
-    |> :ets.update_element(follower, [
-      {2, newest_transaction_id},
-      {3, newest_transaction_id},
+    [{^follower, send_cursor_transaction_id, _, _}] = :ets.lookup(t.table, follower)
+
+    :ets.update_element(t.table, follower, [
+      {2, min(send_cursor_transaction_id, retry_transaction_id)},
       {4, now}
     ])
 

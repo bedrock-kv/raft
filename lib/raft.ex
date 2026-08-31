@@ -203,7 +203,7 @@ defmodule Bedrock.Raft do
 
   def handle_event(
         %{mode: %{term: current_term}} = t,
-        {:append_entries_ack, incoming_term, _},
+        {:append_entries_ack, incoming_term, _, _},
         _from
       )
       when incoming_term > current_term,
@@ -248,11 +248,15 @@ defmodule Bedrock.Raft do
     end
   end
 
-  def handle_event(%{mode: %mode{}} = t, {:append_entries_ack, term, newest_transaction}, from) do
-    mode.append_entries_ack_received(t.mode, term, newest_transaction, from)
+  def handle_event(
+        %{mode: %mode{}} = t,
+        {:append_entries_ack, term, success, request_transaction_id},
+        from
+      ) do
+    mode.append_entries_ack_received(t.mode, term, success, request_transaction_id, from)
     |> case do
       :become_follower ->
-        t |> become_follower(from, term, log(t))
+        t |> become_follower(:undecided, term, log(t))
 
       {:ok, mode} ->
         %{t | mode: mode}

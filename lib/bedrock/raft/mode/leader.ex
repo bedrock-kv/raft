@@ -67,7 +67,7 @@ defmodule Bedrock.Raft.Mode.Leader do
     only: [
       track_consensus_reached: 1,
       track_transaction_added: 2,
-      track_append_entries_ack_received: 3,
+      track_append_entries_ack_received: 4,
       track_heartbeat: 1,
       track_append_entries_sent: 5
     ]
@@ -108,8 +108,8 @@ defmodule Bedrock.Raft.Mode.Leader do
   def new(term, quorum, peers, log, interface) do
     # Initialize id_sequence to the index of the newest transaction in the log
     # so we don't generate conflicting transaction IDs
-    newest_txn_id = Log.newest_transaction_id(log)
-    initial_id_sequence = TransactionID.index(newest_txn_id)
+    newest_transaction_id = Log.newest_transaction_id(log)
+    initial_id_sequence = TransactionID.index(newest_transaction_id)
 
     %__MODULE__{
       quorum: quorum,
@@ -118,7 +118,8 @@ defmodule Bedrock.Raft.Mode.Leader do
       id_sequence: initial_id_sequence,
       follower_tracking:
         FollowerTracking.new(peers,
-          initial_transaction_id: Log.newest_safe_transaction_id(log),
+          initial_transaction_id: Log.initial_transaction_id(log),
+          initial_send_cursor_transaction_id: newest_transaction_id,
           timestamp_fn: &interface.timestamp_in_ms/0
         ),
       log: log,
@@ -193,93 +194,109 @@ defmodule Bedrock.Raft.Mode.Leader do
   end
 
   @doc """
-  A follower has responded to our ping. If we haven't recorded them yet for this
-  round, do so now.
+  A follower has responded to an AppendEntries request. Successful responses
+  advance matchIndex monotonically. Rejections only backtrack the independent
+  send cursor and retry.
   """
   @impl true
   @spec append_entries_ack_received(
           t(),
           Raft.election_term(),
-          newest_transaction_id :: Raft.transaction_id(),
+          success :: boolean(),
+          request_transaction_id :: Raft.transaction_id(),
           follower :: Raft.peer()
         ) ::
           {:ok, t()}
-  def append_entries_ack_received(t, term, follower_newest_transaction_id, _from = follower)
+  def append_entries_ack_received(t, term, success, request_transaction_id, follower)
       when term == t.term do
     if follower in t.peers do
-      handle_current_term_ack(t, term, follower_newest_transaction_id, follower)
+      track_append_entries_ack_received(term, follower, success, request_transaction_id)
+
+      handle_append_entries_response(t, success, request_transaction_id, follower)
+      |> then(&{:ok, &1})
     else
       {:ok, t}
     end
   end
 
-  def append_entries_ack_received(t, term, _, _) when term > t.term, do: become_follower(t)
-  def append_entries_ack_received(t, _, _, _), do: {:ok, t}
+  def append_entries_ack_received(t, term, _, _, _) when term > t.term, do: become_follower(t)
+  def append_entries_ack_received(t, _, _, _, _), do: {:ok, t}
 
-  defp handle_current_term_ack(t, term, follower_newest_transaction_id, follower) do
-    track_append_entries_ack_received(term, follower, follower_newest_transaction_id)
+  defp handle_append_entries_response(t, true, matched_transaction_id, follower) do
+    if Log.has_transaction_id?(t.log, matched_transaction_id) do
+      FollowerTracking.record_success(t.follower_tracking, follower, matched_transaction_id)
 
-    # What's the newest transaction that the *we* have?
-    newest_transaction_id = Log.newest_transaction_id(t.log)
-
-    # Find the newest safe transaction id. If we're able to update the follower
-    # tracker with the newest transaction id they've reported, then we'll use
-    # that to compute the newest safe transaction that there's a quorum for.
-    # Otherwise, we'll use the newest safe transaction from our log.
-    quorum_transaction_id =
-      if follower_newest_transaction_id <= newest_transaction_id do
-        FollowerTracking.update_newest_transaction_id(
-          t.follower_tracking,
-          follower,
-          follower_newest_transaction_id
-        )
-
+      newest_safe_transaction_id =
         FollowerTracking.newest_safe_transaction_id(t.follower_tracking, t.quorum)
-      else
-        Log.newest_safe_transaction_id(t.log)
-      end
+
+      commit_or_continue_replication(t, follower, newest_safe_transaction_id)
+    else
+      t
+    end
+  end
+
+  defp handle_append_entries_response(t, false, rejected_prev_transaction_id, follower) do
+    follower_match_transaction_id =
+      FollowerTracking.match_transaction_id(t.follower_tracking, follower)
+
+    cond do
+      not Log.has_transaction_id?(t.log, rejected_prev_transaction_id) ->
+        t
+
+      rejected_prev_transaction_id <= follower_match_transaction_id ->
+        t
+
+      true ->
+        retry_transaction_id = previous_transaction_id(t.log, rejected_prev_transaction_id)
+
+        FollowerTracking.record_rejection(t.follower_tracking, follower, retry_transaction_id)
+
+        send_append_entries_to_follower(
+          t,
+          follower,
+          FollowerTracking.send_cursor_transaction_id(t.follower_tracking, follower),
+          Log.newest_safe_transaction_id(t.log)
+        )
+    end
+  end
+
+  defp commit_or_continue_replication(t, follower, newest_safe_transaction_id) do
+    newest_transaction_id = Log.newest_transaction_id(t.log)
 
     # Raft only commits entries from the leader's current term by counting
     # replicas. Committing one of those entries also commits its preceding
     # entries from older terms indirectly.
     newest_safe_transaction_id =
-      if TransactionID.term(quorum_transaction_id) == t.term do
-        quorum_transaction_id
+      if TransactionID.term(newest_safe_transaction_id) == t.term do
+        newest_safe_transaction_id
       else
         Log.newest_safe_transaction_id(t.log)
       end
 
-    # Commit up to the newest safe transaction. If we're successful, then we've
-    # reached a new consensus and  we need to tell *everyone* the good news,
-    # including the follower that sent us the ack. If we haven't reached a new
-    # consensus, we'll check to see if the follower needs any more transactions
-    # to catch up. If they do, we send them a new append entries.
-    Log.commit_up_to(t.log, newest_safe_transaction_id)
-    |> case do
+    case Log.commit_up_to(t.log, newest_safe_transaction_id) do
       {:ok, log} ->
         track_consensus_reached(newest_safe_transaction_id)
 
         consistency =
-          if newest_transaction_id == newest_safe_transaction_id do
-            :latest
-          else
-            :behind
-          end
+          if newest_transaction_id == newest_safe_transaction_id, do: :latest, else: :behind
 
-        :ok =
-          t.interface.consensus_reached(log, newest_safe_transaction_id, consistency)
+        :ok = t.interface.consensus_reached(log, newest_safe_transaction_id, consistency)
 
         %{t | log: log} |> send_append_entries_to_followers(t.peers)
 
       :unchanged ->
-        t
-        |> send_append_entries_to_follower_if_needed(
-          follower,
-          follower_newest_transaction_id,
-          newest_safe_transaction_id
-        )
+        send_append_entries_to_follower_if_needed(t, follower, newest_transaction_id)
     end
-    |> then(&{:ok, &1})
+  end
+
+  defp previous_transaction_id(log, transaction_id) do
+    log
+    |> Log.transactions_from(Log.initial_transaction_id(log), transaction_id)
+    |> Enum.reverse()
+    |> case do
+      [{^transaction_id, _}, {previous_transaction_id, _} | _] -> previous_transaction_id
+      [{^transaction_id, _}] -> Log.initial_transaction_id(log)
+    end
   end
 
   @doc """
@@ -349,7 +366,7 @@ defmodule Bedrock.Raft.Mode.Leader do
       &send_append_entries_to_follower(
         &2,
         &1,
-        FollowerTracking.last_sent_transaction_id(t.follower_tracking, &1),
+        FollowerTracking.send_cursor_transaction_id(t.follower_tracking, &1),
         Log.newest_safe_transaction_id(t.log)
       )
     )
@@ -358,19 +375,25 @@ defmodule Bedrock.Raft.Mode.Leader do
   defp send_append_entries_to_follower_if_needed(
          t,
          follower,
-         prev_transaction_id,
-         newest_safe_transaction_id
-       )
-       when prev_transaction_id < newest_safe_transaction_id,
-       do:
-         send_append_entries_to_follower(
-           t,
-           follower,
-           prev_transaction_id,
-           newest_safe_transaction_id
-         )
+         newest_transaction_id
+       ),
+       do: maybe_send_append_entries_to_follower(t, follower, newest_transaction_id)
 
-  defp send_append_entries_to_follower_if_needed(t, _, _, _), do: t
+  defp maybe_send_append_entries_to_follower(t, follower, newest_transaction_id) do
+    send_cursor_transaction_id =
+      FollowerTracking.send_cursor_transaction_id(t.follower_tracking, follower)
+
+    if send_cursor_transaction_id < newest_transaction_id do
+      send_append_entries_to_follower(
+        t,
+        follower,
+        send_cursor_transaction_id,
+        Log.newest_safe_transaction_id(t.log)
+      )
+    else
+      t
+    end
+  end
 
   defp send_append_entries_to_follower(
          t,
@@ -381,14 +404,6 @@ defmodule Bedrock.Raft.Mode.Leader do
     transactions =
       Log.transactions_from(t.log, prev_transaction_id, :newest)
       |> Enum.take(10)
-
-    if transactions != [] do
-      FollowerTracking.update_last_sent_transaction_id(
-        t.follower_tracking,
-        follower,
-        transactions |> List.last() |> elem(0)
-      )
-    end
 
     track_append_entries_sent(
       t.term,
