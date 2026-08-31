@@ -16,6 +16,38 @@ defmodule Bedrock.Raft.Log.BinaryInMemoryLogTest do
     end
   end
 
+  describe "persistent election state" do
+    test "stores term and vote atomically and clears the vote in a newer term", %{log: log} do
+      assert Log.current_term(log) == 0
+      assert Log.voted_for(log) == nil
+
+      {:ok, log} = Log.save_election_state(log, 3, :candidate_a)
+      assert Log.current_term(log) == 3
+      assert Log.voted_for(log) == :candidate_a
+
+      {:ok, log} = Log.save_current_term(log, 4)
+      assert Log.current_term(log) == 4
+      assert Log.voted_for(log) == nil
+    end
+
+    test "rejects changing or clearing a vote in the same term", %{log: log} do
+      {:ok, log} = Log.save_election_state(log, 3, :candidate_a)
+
+      assert {:error, :already_voted} = Log.save_election_state(log, 3, :candidate_b)
+      assert {:error, :already_voted} = Log.save_election_state(log, 3, nil)
+      assert Log.current_term(log) == 3
+      assert Log.voted_for(log) == :candidate_a
+    end
+
+    test "rejects election state from an older term", %{log: log} do
+      {:ok, log} = Log.save_election_state(log, 3, :candidate_a)
+
+      assert {:error, :stale_term} = Log.save_election_state(log, 2, :candidate_b)
+      assert Log.current_term(log) == 3
+      assert Log.voted_for(log) == :candidate_a
+    end
+  end
+
   describe "new_id/1" do
     test "returns the initial transaction ID", %{log: log} do
       assert Log.new_id(log, 0, 0) == TransactionID.encode({0, 0})

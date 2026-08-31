@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- `Bedrock.Raft.Log` implementations must now provide `voted_for/1` and
+  `save_election_state/3`. The latter must atomically persist Raft's
+  `currentTerm` and `votedFor` state before returning. The bundled tuple and
+  binary in-memory logs implement these callbacks, and `save_current_term/2`
+  clears an earlier vote when advancing to a newer term. Equal-term writes may
+  set an empty vote or repeat the existing vote, but attempts to change or
+  clear an existing vote return `{:error, :already_voted}` and lower-term
+  writes return `{:error, :stale_term}`.
+- `Bedrock.Raft.Mode.Candidate.new/5` is now `new/6` and accepts the local peer
+  identity as its first argument so the candidate's self-vote is explicit.
+
+### Fixed
+- Election retries now advance the term, votes survive state reconstruction,
+  and higher-term RPCs persist the new term before mode-specific handling.
+- Same-term RPC responses no longer clear an existing vote, while a repeated
+  RequestVote from the already-selected candidate resends the vote response.
+
 ## [0.9.8] - 2026-08-30
 
 ### Changed

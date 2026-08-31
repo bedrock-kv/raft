@@ -360,12 +360,12 @@ defmodule Bedrock.RaftTest do
                quorum: 1
              } = p
 
-      # Timer elapses the second time with no votes, so we start another
-      # election for term 1
+      # Timer elapses the second time with no votes, so we start a new election
+      # in term 2 and persist a fresh self-vote.
 
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
-      expect(MockInterface, :send_event, fn :b, {:request_vote, 1, ^t0} -> :ok end)
-      expect(MockInterface, :send_event, fn :c, {:request_vote, 1, ^t0} -> :ok end)
+      expect(MockInterface, :send_event, fn :b, {:request_vote, 2, ^t0} -> :ok end)
+      expect(MockInterface, :send_event, fn :c, {:request_vote, 2, ^t0} -> :ok end)
 
       p = Raft.handle_event(p, :election, :timer)
 
@@ -374,14 +374,18 @@ defmodule Bedrock.RaftTest do
       assert %Raft{
                me: :a,
                mode: %Candidate{
-                 term: 1,
+                 term: 2,
                  quorum: 1,
                  peers: [:b, :c],
+                 voted_for: :a,
                  votes: []
                },
                peers: [:b, :c],
                quorum: 1
              } = p
+
+      assert Log.current_term(Raft.log(p)) == 2
+      assert Log.voted_for(Raft.log(p)) == :a
     end
 
     test "In a three peer cluster, as a candidate we receive a vote from a follower in an older term" do
@@ -1000,7 +1004,7 @@ defmodule Bedrock.RaftTest do
       assert {:error, :not_leader} = Raft.next_transaction_id(p)
     end
 
-    test "candidate votes for higher term request" do
+    test "candidate becomes a follower and votes for a higher-term requester" do
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
       expect(MockInterface, :send_event, 2, fn _, _ -> :ok end)
@@ -1010,10 +1014,13 @@ defmodule Bedrock.RaftTest do
         |> Raft.handle_event(:election, :timer)
 
       expect(MockInterface, :send_event, fn :peer_d, {:vote, 2} -> :ok end)
+      expect(MockInterface, :timer, 2, fn :election -> &mock_timer_cancel/0 end)
 
       p = Raft.handle_event(candidate, {:request_vote, 2, {1, 1}}, :peer_d)
 
-      assert %Raft{mode: %Candidate{term: 2, voted_for: :peer_d}} = p
+      assert %Raft{mode: %Follower{term: 2, voted_for: :peer_d}} = p
+      assert Log.current_term(Raft.log(p)) == 2
+      assert Log.voted_for(Raft.log(p)) == :peer_d
     end
 
     test "candidate becomes follower on higher term vote" do
@@ -1052,11 +1059,11 @@ defmodule Bedrock.RaftTest do
         |> Raft.handle_event({:vote, 1}, :c)
 
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
-      expect(MockInterface, :leadership_changed, fn {:peer_d, 2} -> :ok end)
+      expect(MockInterface, :leadership_changed, fn {:undecided, 2} -> :ok end)
 
       p = Raft.handle_event(leader, {:append_entries_ack, 2, {1, 1}}, :peer_d)
 
-      assert %Raft{mode: %Follower{term: 2, leader: :peer_d}} = p
+      assert %Raft{mode: %Follower{term: 2, leader: :undecided}} = p
     end
 
     test "unknown events are ignored" do

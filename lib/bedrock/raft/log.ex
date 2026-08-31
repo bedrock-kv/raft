@@ -91,9 +91,33 @@ defprotocol Bedrock.Raft.Log do
   def current_term(t)
 
   @doc """
-  Save the current term to persistent storage. This must be called before
-  responding to RPCs to ensure Raft safety guarantees are maintained.
+  Save the current term to persistent storage. Advancing the term also clears
+  any vote from an earlier term. This must be called before responding to RPCs
+  to ensure Raft safety guarantees are maintained.
   """
   @spec save_current_term(t(), Raft.election_term()) :: {:ok, t()}
   def save_current_term(t, term)
+
+  @doc """
+  Get the candidate that received this server's vote in the current term, or
+  `nil` if the server has not voted.
+
+  Like `current_term/1`, this value is persistent Raft election state and must
+  survive reconstruction of the protocol state machine.
+  """
+  @spec voted_for(t()) :: Raft.peer() | nil
+  def voted_for(t)
+
+  @doc """
+  Atomically save the current term and the candidate voted for in that term.
+
+  Implementations must make both values durable before returning. Advancing to
+  a new term uses `nil` for `voted_for`; granting a vote stores the candidate.
+  Once a candidate is stored, an equal-term write must not change or clear it
+  and returns `{:error, :already_voted}` instead. Writes below the durable term
+  return `{:error, :stale_term}`.
+  """
+  @spec save_election_state(t(), Raft.election_term(), Raft.peer() | nil) ::
+          {:ok, t()} | {:error, :already_voted | :stale_term}
+  def save_election_state(t, term, voted_for)
 end

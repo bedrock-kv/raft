@@ -12,12 +12,14 @@ defmodule Bedrock.Raft.Log.BinaryInMemoryLog do
   @type t :: %__MODULE__{
           transactions: :ets.table(),
           last_commit: Raft.binary_transaction_id() | nil,
-          current_term: Raft.election_term()
+          current_term: Raft.election_term(),
+          voted_for: Raft.peer() | nil
         }
   defstruct ~w[
     transactions
     last_commit
     current_term
+    voted_for
   ]a
 
   @spec new() :: t()
@@ -151,6 +153,28 @@ defmodule Bedrock.Raft.Log.BinaryInMemoryLog do
     def current_term(t), do: t.current_term
 
     @impl true
-    def save_current_term(t, term), do: {:ok, %{t | current_term: term}}
+    def save_current_term(t, term) when term > t.current_term,
+      do: save_election_state(t, term, nil)
+
+    def save_current_term(t, _term), do: {:ok, t}
+
+    @impl true
+    def voted_for(t), do: t.voted_for
+
+    @impl true
+    def save_election_state(t, term, voted_for) when term > t.current_term,
+      do: {:ok, %{t | current_term: term, voted_for: voted_for}}
+
+    def save_election_state(%{voted_for: nil} = t, term, voted_for) when term == t.current_term,
+      do: {:ok, %{t | voted_for: voted_for}}
+
+    def save_election_state(%{voted_for: voted_for} = t, term, voted_for)
+        when term == t.current_term,
+        do: {:ok, t}
+
+    def save_election_state(t, term, _voted_for) when term == t.current_term,
+      do: {:error, :already_voted}
+
+    def save_election_state(_t, _term, _voted_for), do: {:error, :stale_term}
   end
 end

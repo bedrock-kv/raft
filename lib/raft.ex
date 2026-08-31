@@ -175,6 +175,40 @@ defmodule Bedrock.Raft do
     end
   end
 
+  def handle_event(
+        %{mode: %{term: current_term}} = t,
+        {:request_vote, incoming_term, _} = event,
+        from
+      )
+      when incoming_term > current_term do
+    t
+    |> transition_to_higher_term(:undecided, incoming_term)
+    |> handle_event(event, from)
+  end
+
+  def handle_event(
+        %{mode: %{term: current_term}} = t,
+        {:append_entries, incoming_term, _, _, _} = event,
+        from
+      )
+      when incoming_term > current_term do
+    t
+    |> transition_to_higher_term(from, incoming_term)
+    |> handle_event(event, from)
+  end
+
+  def handle_event(%{mode: %{term: current_term}} = t, {:vote, incoming_term}, _from)
+      when incoming_term > current_term,
+      do: transition_to_higher_term(t, :undecided, incoming_term)
+
+  def handle_event(
+        %{mode: %{term: current_term}} = t,
+        {:append_entries_ack, incoming_term, _},
+        _from
+      )
+      when incoming_term > current_term,
+      do: transition_to_higher_term(t, :undecided, incoming_term)
+
   def handle_event(%{mode: %mode{}} = t, {:request_vote, term, newest_transaction_id}, candidate) do
     mode.vote_requested(t.mode, term, candidate, newest_transaction_id)
     |> case do
@@ -234,10 +268,10 @@ defmodule Bedrock.Raft do
   defp become_candidate(t, term, log) do
     track_became_candidate(term, t.quorum, t.peers)
 
-    # Persist the new term before becoming candidate (Raft safety requirement)
-    {:ok, updated_log} = Log.save_current_term(log, term)
+    # Persist both the new term and self-vote before requesting any votes.
+    {:ok, updated_log} = Log.save_election_state(log, term, t.me)
 
-    case Candidate.new(term, t.quorum, t.peers, updated_log, t.interface) do
+    case Candidate.new(t.me, term, t.quorum, t.peers, updated_log, t.interface) do
       :become_leader ->
         # Single-node cluster immediately becomes leader
         t |> become_leader(term, updated_log)
@@ -255,7 +289,7 @@ defmodule Bedrock.Raft do
     # Persist the new term if it's higher than our current term (Raft safety requirement)
     updated_log =
       if term > Log.current_term(log) do
-        {:ok, log_with_term} = Log.save_current_term(log, term)
+        {:ok, log_with_term} = Log.save_election_state(log, term, nil)
         log_with_term
       else
         log
@@ -264,6 +298,17 @@ defmodule Bedrock.Raft do
     %{t | mode: Follower.new(term, updated_log, t.interface, t.me, leader)}
     |> notify_change_in_leadership(leader(t))
   end
+
+  defp transition_to_higher_term(%{mode: %Follower{} = follower} = t, leader, term) do
+    old_leader = leader(t)
+    {:ok, log} = Log.save_election_state(follower.log, term, nil)
+
+    %{t | mode: %{follower | leader: leader, term: term, voted_for: nil, log: log}}
+    |> notify_change_in_leadership(old_leader)
+  end
+
+  defp transition_to_higher_term(t, leader, term),
+    do: become_follower(t, leader, term, log(t))
 
   defp become_leader(t, term, log) do
     track_became_leader(term, t.quorum, t.peers)
