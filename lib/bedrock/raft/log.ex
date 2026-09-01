@@ -77,6 +77,15 @@ defprotocol Bedrock.Raft.Log do
   @doc """
   Get a list of transactions that have occurred using the given transaction
   as a starting point -- not inclusive of the starting point.
+
+  Reads are safe from processes other than the log owner: when the owner
+  truncates the log concurrently (`purge_transactions_after/2`), a read must
+  never crash, but may observe a result that is shortened or mixed across the
+  truncation -- pre-truncation entries followed by re-appended ones, matching
+  no single log state. Because `purge_transactions_after/2` refuses to delete
+  committed entries, reads bounded by `:newest_safe` are stable; only reads
+  covering the uncommitted suffix (`:newest`) can observe this churn. The
+  same consistency applies to `transactions_from/4` and `transactions_to/2`.
   """
   @spec transactions_from(
           t(),

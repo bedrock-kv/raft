@@ -157,8 +157,20 @@ defmodule Bedrock.Raft.Log.BinaryInMemoryLog do
           Enum.reverse(acc)
 
         next_key ->
-          [transaction] = :ets.lookup(table, next_key)
-          walk_forward(table, next_key, to, decrement_limit(limit), [transaction | acc])
+          case :ets.lookup(table, next_key) do
+            [transaction] ->
+              walk_forward(table, next_key, to, decrement_limit(limit), [transaction | acc])
+
+            [] ->
+              # The key vanished between :ets.next and the lookup: the table
+              # owner truncated the log concurrently. Halt the walk. The old
+              # single-select read was one atomic, isolated BIF -- a
+              # point-in-time snapshot that could not be interrupted. The
+              # bounded walk traded that snapshot for O(result + log n)
+              # reads; this branch makes the resulting weak consistency
+              # non-crashing (see the consistency note on the Log protocol).
+              Enum.reverse(acc)
+          end
       end
     end
 
