@@ -44,7 +44,8 @@ defmodule Bedrock.Raft do
           mode: Follower.t() | Candidate.t() | Leader.t() | nil,
           peers: [peer()],
           quorum: pos_integer(),
-          interface: module()
+          interface: module(),
+          append_entries_batch_size: pos_integer()
         }
   defstruct ~w[
       me
@@ -52,18 +53,30 @@ defmodule Bedrock.Raft do
       peers
       quorum
       interface
+      append_entries_batch_size
     ]a
 
   @doc """
   Create a new RAFT consensus protocol instance.
+
+  Options:
+
+    * `:append_entries_batch_size` - the maximum number of transactions the
+      leader puts into a single AppendEntries request (default
+      `#{Leader.default_append_entries_batch_size()}`). Larger batches
+      amortize round trips while a follower is catching up, at the cost of
+      larger messages; the batch size also bounds the work a single request
+      imposes on both the leader (log read) and the follower
+      (append/reconcile). Must be a positive integer.
   """
   @spec new(
           me :: peer(),
           peers :: [peer()],
           log :: Log.t(),
-          interface :: module()
+          interface :: module(),
+          opts :: [append_entries_batch_size: pos_integer()]
         ) :: t()
-  def new(me, peers, log, interface) do
+  def new(me, peers, log, interface, opts \\ []) do
     # Assume that we'll always vote for ourselves, so majority - 1.
     quorum = determine_majority([me | peers]) - 1
 
@@ -74,7 +87,11 @@ defmodule Bedrock.Raft do
       me: me,
       peers: peers,
       quorum: quorum,
-      interface: interface
+      interface: interface,
+      append_entries_batch_size:
+        opts
+        |> Keyword.get(:append_entries_batch_size, Leader.default_append_entries_batch_size())
+        |> Leader.validate_append_entries_batch_size!()
     }
     |> then(fn t ->
       # All nodes start as followers and must go through election process
@@ -175,6 +192,40 @@ defmodule Bedrock.Raft do
     end
   end
 
+  def handle_event(
+        %{mode: %{term: current_term}} = t,
+        {:request_vote, incoming_term, _} = event,
+        from
+      )
+      when incoming_term > current_term do
+    t
+    |> transition_to_higher_term(:undecided, incoming_term)
+    |> handle_event(event, from)
+  end
+
+  def handle_event(
+        %{mode: %{term: current_term}} = t,
+        {:append_entries, incoming_term, _, _, _} = event,
+        from
+      )
+      when incoming_term > current_term do
+    t
+    |> transition_to_higher_term(from, incoming_term)
+    |> handle_event(event, from)
+  end
+
+  def handle_event(%{mode: %{term: current_term}} = t, {:vote, incoming_term}, _from)
+      when incoming_term > current_term,
+      do: transition_to_higher_term(t, :undecided, incoming_term)
+
+  def handle_event(
+        %{mode: %{term: current_term}} = t,
+        {:append_entries_ack, incoming_term, _, _, _},
+        _from
+      )
+      when incoming_term > current_term,
+      do: transition_to_higher_term(t, :undecided, incoming_term)
+
   def handle_event(%{mode: %mode{}} = t, {:request_vote, term, newest_transaction_id}, candidate) do
     mode.vote_requested(t.mode, term, candidate, newest_transaction_id)
     |> case do
@@ -214,11 +265,23 @@ defmodule Bedrock.Raft do
     end
   end
 
-  def handle_event(%{mode: %mode{}} = t, {:append_entries_ack, term, newest_transaction}, from) do
-    mode.append_entries_ack_received(t.mode, term, newest_transaction, from)
+  def handle_event(
+        %{mode: %mode{}} = t,
+        {:append_entries_ack, term, success, request_transaction_id,
+         follower_newest_transaction_id},
+        from
+      ) do
+    mode.append_entries_ack_received(
+      t.mode,
+      term,
+      success,
+      request_transaction_id,
+      follower_newest_transaction_id,
+      from
+    )
     |> case do
       :become_follower ->
-        t |> become_follower(from, term, log(t))
+        t |> become_follower(:undecided, term, log(t))
 
       {:ok, mode} ->
         %{t | mode: mode}
@@ -234,42 +297,85 @@ defmodule Bedrock.Raft do
   defp become_candidate(t, term, log) do
     track_became_candidate(term, t.quorum, t.peers)
 
-    # Persist the new term before becoming candidate (Raft safety requirement)
-    {:ok, updated_log} = Log.save_current_term(log, term)
+    # Persist both the new term and self-vote before requesting any votes.
+    {:ok, updated_log} = Log.save_election_state(log, term, t.me)
 
-    case Candidate.new(term, t.quorum, t.peers, updated_log, t.interface) do
+    case Candidate.new(t.me, term, t.quorum, t.peers, updated_log, t.interface) do
       :become_leader ->
         # Single-node cluster immediately becomes leader
         t |> become_leader(term, updated_log)
 
-      candidate ->
+      %Candidate{} = candidate ->
         # Multi-node cluster becomes candidate and waits for votes
         %{t | mode: candidate}
-        |> notify_change_in_leadership(leader(t))
+        |> notify_change_in_leadership(leadership(t))
+
+      {:error, _reason} ->
+        # A conforming log accepts Candidate.new/6's idempotent re-save of our
+        # self-vote. If an implementation rejects it, remain in a valid mode
+        # using the election state that was already persisted above.
+        become_follower(t, :undecided, Log.current_term(updated_log), updated_log)
     end
   end
 
+  defp become_follower(%{mode: nil} = t, leader, term, log),
+    do: make_follower(t, leader, term, log)
+
   defp become_follower(t, leader, term, log) do
+    old_leadership = leadership(t)
+
+    t
+    |> make_follower(leader, term, log)
+    |> notify_change_in_leadership(old_leadership)
+  end
+
+  defp make_follower(t, leader, term, log) do
     track_became_follower(term, leader)
 
     # Persist the new term if it's higher than our current term (Raft safety requirement)
     updated_log =
       if term > Log.current_term(log) do
-        {:ok, log_with_term} = Log.save_current_term(log, term)
+        {:ok, log_with_term} = Log.save_election_state(log, term, nil)
         log_with_term
       else
         log
       end
 
     %{t | mode: Follower.new(term, updated_log, t.interface, t.me, leader)}
-    |> notify_change_in_leadership(leader(t))
+  end
+
+  defp transition_to_higher_term(%{mode: %Follower{} = follower} = t, leader, term) do
+    old_leadership = leadership(t)
+    {:ok, log} = Log.save_election_state(follower.log, term, nil)
+
+    %{t | mode: %{follower | leader: leader, term: term, voted_for: nil, log: log}}
+    |> notify_change_in_leadership(old_leadership)
+  end
+
+  defp transition_to_higher_term(t, leader, term) do
+    t
+    |> cancel_mode_timer()
+    |> become_follower(leader, term, log(t))
   end
 
   defp become_leader(t, term, log) do
     track_became_leader(term, t.quorum, t.peers)
 
-    %{t | mode: Leader.new(term, t.quorum, t.peers, log, t.interface)}
-    |> notify_change_in_leadership(leader(t))
+    %{
+      t
+      | mode:
+          Leader.new(term, t.quorum, t.peers, log, t.interface,
+            append_entries_batch_size: t.append_entries_batch_size
+          )
+    }
+    |> notify_change_in_leadership(leadership(t))
+  end
+
+  defp cancel_mode_timer(%{mode: %{cancel_timer_fn: nil}} = t), do: t
+
+  defp cancel_mode_timer(%{mode: mode} = t) do
+    mode.cancel_timer_fn.()
+    %{t | mode: %{mode | cancel_timer_fn: nil}}
   end
 
   @spec next_term(t()) :: Raft.election_term()
@@ -278,12 +384,13 @@ defmodule Bedrock.Raft do
   @spec determine_majority([peer()]) :: non_neg_integer()
   defp determine_majority(peers), do: 1 + (peers |> length() |> div(2))
 
-  @spec notify_change_in_leadership(t(), old_leader :: Raft.peer()) :: t()
-  defp notify_change_in_leadership(t, old_leader) do
-    current_leader = leader(t)
+  @spec notify_change_in_leadership(t(), old_leadership :: Raft.leadership()) :: t()
+  defp notify_change_in_leadership(t, old_leadership) do
+    {old_leader, old_term} = old_leadership
+    {current_leader, current_term} = leadership(t)
 
-    if current_leader != old_leader do
-      current_term = term(t)
+    if current_leader != old_leader or
+         (current_leader != :undecided and current_term != old_term) do
       t.interface.leadership_changed({current_leader, current_term})
       track_leadership_change(current_leader, current_term)
     end

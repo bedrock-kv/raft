@@ -67,7 +67,7 @@ defmodule Bedrock.Raft.Mode.Leader do
     only: [
       track_consensus_reached: 1,
       track_transaction_added: 2,
-      track_append_entries_ack_received: 3,
+      track_append_entries_ack_received: 5,
       track_heartbeat: 1,
       track_append_entries_sent: 5
     ]
@@ -80,7 +80,8 @@ defmodule Bedrock.Raft.Mode.Leader do
           follower_tracking: FollowerTracking.t(),
           cancel_timer_fn: function() | nil,
           log: Log.t(),
-          interface: module()
+          interface: module(),
+          append_entries_batch_size: pos_integer()
         }
   defstruct [
     :peers,
@@ -90,26 +91,63 @@ defmodule Bedrock.Raft.Mode.Leader do
     :follower_tracking,
     :cancel_timer_fn,
     :log,
-    :interface
+    :interface,
+    :append_entries_batch_size
   ]
+
+  @default_append_entries_batch_size 10
+
+  @doc """
+  The default maximum number of transactions carried by a single
+  AppendEntries request.
+  """
+  @spec default_append_entries_batch_size() :: pos_integer()
+  def default_append_entries_batch_size, do: @default_append_entries_batch_size
+
+  @doc """
+  Validate an `:append_entries_batch_size` value, raising `ArgumentError`
+  unless it is a positive integer. Shared by `Bedrock.Raft.new/5` and
+  `new/6` so the two construction paths cannot drift.
+  """
+  @spec validate_append_entries_batch_size!(term()) :: pos_integer()
+  def validate_append_entries_batch_size!(n) when is_integer(n) and n > 0, do: n
+
+  def validate_append_entries_batch_size!(other) do
+    raise ArgumentError,
+          ":append_entries_batch_size must be a positive integer, got: #{inspect(other)}"
+  end
 
   @doc """
   Create a new leader. We'll send notices to all the peers, and schedule the
   timer to tick.
+
+  Options:
+
+    * `:append_entries_batch_size` - the maximum number of transactions
+      carried by a single AppendEntries request (default
+      `#{@default_append_entries_batch_size}`); must be a positive integer.
+      See `Bedrock.Raft.new/5` for the full tradeoff discussion.
   """
   @spec new(
           Raft.election_term(),
           Raft.quorum(),
           [Raft.peer()],
           Log.t(),
-          interface :: module()
+          interface :: module(),
+          opts :: [append_entries_batch_size: pos_integer()]
         ) ::
           t()
-  def new(term, quorum, peers, log, interface) do
+  def new(term, quorum, peers, log, interface, opts \\ []) do
+    # Validate before doing anything with side effects (timers, ETS).
+    append_entries_batch_size =
+      opts
+      |> Keyword.get(:append_entries_batch_size, @default_append_entries_batch_size)
+      |> validate_append_entries_batch_size!()
+
     # Initialize id_sequence to the index of the newest transaction in the log
     # so we don't generate conflicting transaction IDs
-    newest_txn_id = Log.newest_transaction_id(log)
-    initial_id_sequence = TransactionID.index(newest_txn_id)
+    newest_transaction_id = Log.newest_transaction_id(log)
+    initial_id_sequence = TransactionID.index(newest_transaction_id)
 
     %__MODULE__{
       quorum: quorum,
@@ -118,11 +156,13 @@ defmodule Bedrock.Raft.Mode.Leader do
       id_sequence: initial_id_sequence,
       follower_tracking:
         FollowerTracking.new(peers,
-          initial_transaction_id: Log.newest_safe_transaction_id(log),
+          initial_transaction_id: Log.initial_transaction_id(log),
+          initial_send_cursor_transaction_id: newest_transaction_id,
           timestamp_fn: &interface.timestamp_in_ms/0
         ),
       log: log,
-      interface: interface
+      interface: interface,
+      append_entries_batch_size: append_entries_batch_size
     }
     |> set_timer()
   end
@@ -193,76 +233,164 @@ defmodule Bedrock.Raft.Mode.Leader do
   end
 
   @doc """
-  A follower has responded to our ping. If we haven't recorded them yet for this
-  round, do so now.
+  A follower has responded to an AppendEntries request. Successful responses
+  advance matchIndex monotonically. Rejections only backtrack the independent
+  send cursor and retry.
   """
   @impl true
   @spec append_entries_ack_received(
           t(),
           Raft.election_term(),
-          newest_transaction_id :: Raft.transaction_id(),
+          success :: boolean(),
+          request_transaction_id :: Raft.transaction_id(),
+          follower_newest_transaction_id :: Raft.transaction_id(),
           follower :: Raft.peer()
         ) ::
           {:ok, t()}
-  def append_entries_ack_received(t, term, follower_newest_transaction_id, _from = follower)
+  def append_entries_ack_received(
+        t,
+        term,
+        success,
+        request_transaction_id,
+        follower_newest_transaction_id,
+        follower
+      )
       when term == t.term do
-    track_append_entries_ack_received(term, follower, follower_newest_transaction_id)
+    if follower in t.peers do
+      track_append_entries_ack_received(
+        term,
+        follower,
+        success,
+        request_transaction_id,
+        follower_newest_transaction_id
+      )
 
-    # What's the newest transaction that the *we* have?
+      handle_append_entries_response(
+        t,
+        success,
+        request_transaction_id,
+        follower_newest_transaction_id,
+        follower
+      )
+      |> then(&{:ok, &1})
+    else
+      {:ok, t}
+    end
+  end
+
+  def append_entries_ack_received(t, term, _, _, _, _) when term > t.term,
+    do: become_follower(t)
+
+  def append_entries_ack_received(t, _, _, _, _, _), do: {:ok, t}
+
+  # SAFETY INVARIANT: the follower's newest-entry hint may only ever
+  # reposition the send cursor (a probe position that the next AppendEntries
+  # consistency check validates). It must NEVER feed matchIndex,
+  # record_success, or commit decisions -- those advance exclusively on
+  # acknowledged request ids that exist in our own log, which is why the
+  # success clause ignores the hint entirely.
+  defp handle_append_entries_response(
+         t,
+         true,
+         matched_transaction_id,
+         _follower_newest_transaction_id,
+         follower
+       ) do
+    if Log.has_transaction_id?(t.log, matched_transaction_id) do
+      FollowerTracking.record_success(t.follower_tracking, follower, matched_transaction_id)
+
+      newest_safe_transaction_id =
+        FollowerTracking.newest_safe_transaction_id(t.follower_tracking, t.quorum)
+
+      commit_or_continue_replication(t, follower, newest_safe_transaction_id)
+    else
+      t
+    end
+  end
+
+  defp handle_append_entries_response(
+         t,
+         false,
+         rejected_prev_transaction_id,
+         follower_newest_transaction_id,
+         follower
+       ) do
+    follower_match_transaction_id =
+      FollowerTracking.match_transaction_id(t.follower_tracking, follower)
+
+    cond do
+      not Log.has_transaction_id?(t.log, rejected_prev_transaction_id) ->
+        t
+
+      rejected_prev_transaction_id <= follower_match_transaction_id ->
+        t
+
+      true ->
+        # Clamp to matchIndex: a delayed rejection can carry a stale hint from
+        # before the follower caught up, and without the clamp it would drag
+        # the cursor below confirmed replication and replay the whole prefix.
+        # This clamp is what enforces cursor >= matchIndex for hint jumps
+        # (one-step backtracking preserves it inherently), and probing from a
+        # matched entry always passes the follower's consistency check.
+        retry_transaction_id =
+          max(
+            follower_match_transaction_id,
+            retry_transaction_id(t, rejected_prev_transaction_id, follower_newest_transaction_id)
+          )
+
+        FollowerTracking.record_rejection(t.follower_tracking, follower, retry_transaction_id)
+
+        send_append_entries_to_follower(
+          t,
+          follower,
+          FollowerTracking.send_cursor_transaction_id(t.follower_tracking, follower),
+          Log.newest_safe_transaction_id(t.log)
+        )
+    end
+  end
+
+  defp commit_or_continue_replication(t, follower, newest_safe_transaction_id) do
     newest_transaction_id = Log.newest_transaction_id(t.log)
 
-    # Find the newest safe transaction id. If we're able to update the follower
-    # tracker with the newest transaction id they've reported, then we'll use
-    # that to compute the newest safe transaction that there's a quorum for.
-    # Otherwise, we'll use the newest safe transaction from our log.
+    # Raft only commits entries from the leader's current term by counting
+    # replicas. Committing one of those entries also commits its preceding
+    # entries from older terms indirectly.
     newest_safe_transaction_id =
-      if follower_newest_transaction_id <= newest_transaction_id do
-        FollowerTracking.update_newest_transaction_id(
-          t.follower_tracking,
-          follower,
-          follower_newest_transaction_id
-        )
-
-        FollowerTracking.newest_safe_transaction_id(t.follower_tracking, t.quorum)
+      if TransactionID.term(newest_safe_transaction_id) == t.term do
+        newest_safe_transaction_id
       else
         Log.newest_safe_transaction_id(t.log)
       end
 
-    # Commit up to the newest safe transaction. If we're successful, then we've
-    # reached a new consensus and  we need to tell *everyone* the good news,
-    # including the follower that sent us the ack. If we haven't reached a new
-    # consensus, we'll check to see if the follower needs any more transactions
-    # to catch up. If they do, we send them a new append entries.
-    Log.commit_up_to(t.log, newest_safe_transaction_id)
-    |> case do
+    case Log.commit_up_to(t.log, newest_safe_transaction_id) do
       {:ok, log} ->
         track_consensus_reached(newest_safe_transaction_id)
 
         consistency =
-          if newest_transaction_id == newest_safe_transaction_id do
-            :latest
-          else
-            :behind
-          end
+          if newest_transaction_id == newest_safe_transaction_id, do: :latest, else: :behind
 
-        :ok =
-          t.interface.consensus_reached(log, newest_safe_transaction_id, consistency)
+        :ok = t.interface.consensus_reached(log, newest_safe_transaction_id, consistency)
 
         %{t | log: log} |> send_append_entries_to_followers(t.peers)
 
       :unchanged ->
-        t
-        |> send_append_entries_to_follower_if_needed(
-          follower,
-          follower_newest_transaction_id,
-          newest_safe_transaction_id
-        )
+        send_append_entries_to_follower_if_needed(t, follower, newest_transaction_id)
     end
-    |> then(&{:ok, &1})
   end
 
-  def append_entries_ack_received(t, term, _, _) when term > t.term, do: become_follower(t)
-  def append_entries_ack_received(t, _, _, _), do: {:ok, t}
+  # A valid hint is always older than the rejected prev entry: by the Log
+  # Matching property, if both we and the follower hold the hint entry and
+  # prev <= hint, the follower would also hold prev and would not have
+  # rejected. The guard is defense in depth against malformed responses; when
+  # the hint is unusable we fall back to stepping one entry backwards.
+  defp retry_transaction_id(t, rejected_prev_transaction_id, follower_newest_transaction_id) do
+    if Log.has_transaction_id?(t.log, follower_newest_transaction_id) and
+         follower_newest_transaction_id < rejected_prev_transaction_id do
+      follower_newest_transaction_id
+    else
+      Log.previous_transaction_id(t.log, rejected_prev_transaction_id)
+    end
+  end
 
   @doc """
   A ping that is normally directed at a follower has been received. If the term
@@ -331,7 +459,7 @@ defmodule Bedrock.Raft.Mode.Leader do
       &send_append_entries_to_follower(
         &2,
         &1,
-        FollowerTracking.last_sent_transaction_id(t.follower_tracking, &1),
+        FollowerTracking.send_cursor_transaction_id(t.follower_tracking, &1),
         Log.newest_safe_transaction_id(t.log)
       )
     )
@@ -340,19 +468,25 @@ defmodule Bedrock.Raft.Mode.Leader do
   defp send_append_entries_to_follower_if_needed(
          t,
          follower,
-         prev_transaction_id,
-         newest_safe_transaction_id
-       )
-       when prev_transaction_id < newest_safe_transaction_id,
-       do:
-         send_append_entries_to_follower(
-           t,
-           follower,
-           prev_transaction_id,
-           newest_safe_transaction_id
-         )
+         newest_transaction_id
+       ),
+       do: maybe_send_append_entries_to_follower(t, follower, newest_transaction_id)
 
-  defp send_append_entries_to_follower_if_needed(t, _, _, _), do: t
+  defp maybe_send_append_entries_to_follower(t, follower, newest_transaction_id) do
+    send_cursor_transaction_id =
+      FollowerTracking.send_cursor_transaction_id(t.follower_tracking, follower)
+
+    if send_cursor_transaction_id < newest_transaction_id do
+      send_append_entries_to_follower(
+        t,
+        follower,
+        send_cursor_transaction_id,
+        Log.newest_safe_transaction_id(t.log)
+      )
+    else
+      t
+    end
+  end
 
   defp send_append_entries_to_follower(
          t,
@@ -361,11 +495,16 @@ defmodule Bedrock.Raft.Mode.Leader do
          newest_safe_transaction_id
        ) do
     transactions =
-      Log.transactions_from(t.log, prev_transaction_id, :newest)
-      |> Enum.take(10)
+      Log.transactions_from(t.log, prev_transaction_id, :newest, t.append_entries_batch_size)
 
+    # Pipelining: move the send cursor past what this request carries so the
+    # next send continues from here instead of re-sending the same window.
+    # This is only an optimistic send position -- matchIndex still advances
+    # exclusively on acknowledged success, and a rejection backtracks the
+    # cursor again, so a lost request is recovered via heartbeat probe ->
+    # rejection -> backtrack.
     if transactions != [] do
-      FollowerTracking.update_last_sent_transaction_id(
+      FollowerTracking.advance_send_cursor(
         t.follower_tracking,
         follower,
         transactions |> List.last() |> elem(0)

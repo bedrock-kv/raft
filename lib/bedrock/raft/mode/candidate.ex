@@ -47,17 +47,16 @@ defmodule Bedrock.Raft.Mode.Candidate do
 
   alias Bedrock.Raft
   alias Bedrock.Raft.Log
-  alias Bedrock.Raft.TransactionID
 
   import Bedrock.Raft.Telemetry,
     only: [
       track_request_votes: 3,
       track_vote_received: 2,
-      track_election_ended: 3,
-      track_vote_sent: 2
+      track_election_ended: 3
     ]
 
   @type t :: %__MODULE__{
+          me: Raft.peer(),
           term: Raft.election_term(),
           quorum: Raft.quorum(),
           peers: [Raft.peer()],
@@ -68,6 +67,7 @@ defmodule Bedrock.Raft.Mode.Candidate do
           cancel_timer_fn: function() | nil
         }
   defstruct [
+    :me,
     :term,
     :quorum,
     :peers,
@@ -79,33 +79,44 @@ defmodule Bedrock.Raft.Mode.Candidate do
   ]
 
   @spec new(
+          me :: Raft.peer(),
           Raft.election_term(),
           Raft.quorum(),
           [Raft.peer()],
           log :: Log.t(),
           interface :: module()
         ) ::
-          t() | :become_leader
-  def new(term, quorum, peers, log, interface) do
-    %__MODULE__{
-      term: term,
-      quorum: quorum,
-      peers: peers,
-      votes: [],
-      voted_for: nil,
-      log: log,
-      interface: interface
-    }
-    |> request_votes()
-    |> become_leader_with_quorum()
-    |> case do
-      :become_leader ->
-        # Return marker for single-node immediate election
-        :become_leader
+          t() | :become_leader | {:error, :already_voted | :stale_term}
+  def new(me, term, quorum, peers, log, interface) do
+    case Log.save_election_state(log, term, me) do
+      {:ok, log} ->
+        %__MODULE__{
+          me: me,
+          term: term,
+          quorum: quorum,
+          peers: peers,
+          votes: [],
+          voted_for: me,
+          log: log,
+          interface: interface
+        }
+        |> request_votes()
+        |> become_leader_with_quorum()
+        |> case do
+          :become_leader ->
+            # Return marker for single-node immediate election
+            :become_leader
 
-      {:ok, candidate} ->
-        # Multi-node cluster, set timer and wait for votes
-        candidate |> set_timer()
+          {:ok, candidate} ->
+            # Multi-node cluster, set timer and wait for votes
+            candidate |> set_timer()
+        end
+
+      {:error, :already_voted} = error ->
+        error
+
+      {:error, :stale_term} = error ->
+        error
     end
   end
 
@@ -116,18 +127,7 @@ defmodule Bedrock.Raft.Mode.Candidate do
           candidate :: Raft.peer(),
           candidate_last_transaction_id :: Raft.transaction_id()
         ) :: {:ok, t()} | :become_follower
-  def vote_requested(t, term, candidate, candidate_newest_transaction_id)
-      when term >= t.term and is_nil(t.voted_for) do
-    if log_at_least_as_up_to_date?(
-         candidate_newest_transaction_id,
-         Log.newest_transaction_id(t.log)
-       ) do
-      t |> vote_for(term, candidate)
-    else
-      t
-    end
-    |> then(&{:ok, &1})
-  end
+  def vote_requested(t, term, _, _) when term > t.term, do: become_follower(t)
 
   def vote_requested(t, _, _, _), do: {:ok, t}
 
@@ -167,19 +167,23 @@ defmodule Bedrock.Raft.Mode.Candidate do
   def add_transaction(_, _), do: {:error, :not_leader}
 
   @doc """
-  An append entries ack has been received. If the term is greater than or equal
-  to our term, then we will cancel any outstanding timers and signal that a new
+  An append entries ack has been received. If the term is greater than our
+  term, then we will cancel any outstanding timers and signal that a new
   leader has been elected. Otherwise, we'll ignore the it.
   """
   @impl true
   @spec append_entries_ack_received(
           any(),
           Raft.election_term(),
-          newest_transaction_id :: Raft.transaction_id(),
+          success :: boolean(),
+          request_transaction_id :: Raft.transaction_id(),
+          follower_newest_transaction_id :: Raft.transaction_id(),
           follower :: Raft.peer()
         ) :: {:ok, any()} | :become_follower
-  def append_entries_ack_received(t, term, _, _) when term >= t.term, do: become_follower(t)
-  def append_entries_ack_received(t, _, _, _), do: {:ok, t}
+  def append_entries_ack_received(t, term, _, _, _, _) when term > t.term,
+    do: become_follower(t)
+
+  def append_entries_ack_received(t, _, _, _, _, _), do: {:ok, t}
 
   @doc """
   A ping has been received. If the term is greater than or equal to our term,
@@ -200,15 +204,11 @@ defmodule Bedrock.Raft.Mode.Candidate do
   def append_entries_received(t, _, _, _, _, _), do: {:ok, t}
 
   @impl true
-  @spec timer_ticked(t(), :election) :: {:ok, t()}
+  @spec timer_ticked(t(), :election) :: :become_candidate
   def timer_ticked(t, :election) do
     track_election_ended(t.term, t.votes, t.quorum)
-
-    t
-    |> clear_votes()
-    |> set_timer()
-    |> request_votes()
-    |> then(&{:ok, &1})
+    t |> cancel_timer()
+    :become_candidate
   end
 
   def timer_ticked(t, _), do: {:ok, t}
@@ -223,15 +223,6 @@ defmodule Bedrock.Raft.Mode.Candidate do
   def become_leader(t) do
     t |> cancel_timer()
     :become_leader
-  end
-
-  defp clear_votes(t), do: %{t | votes: []}
-
-  @spec vote_for(t(), Raft.election_term(), Raft.peer()) :: t()
-  defp vote_for(t, term, candidate) do
-    track_vote_sent(term, candidate)
-    t.interface.send_event(candidate, {:vote, term})
-    %{t | voted_for: candidate, term: term}
   end
 
   @spec request_votes(t()) :: t()
@@ -253,17 +244,4 @@ defmodule Bedrock.Raft.Mode.Candidate do
 
   @spec set_timer(t()) :: t()
   defp set_timer(t), do: %{t | cancel_timer_fn: t.interface.timer(:election)}
-
-  # Raft log safety check: candidate is at least as up-to-date (term priority, then index)
-  @spec log_at_least_as_up_to_date?(Raft.transaction_id(), Raft.transaction_id()) :: boolean()
-  defp log_at_least_as_up_to_date?(candidate_txn_id, my_txn_id) do
-    candidate_term = TransactionID.term(candidate_txn_id)
-    my_term = TransactionID.term(my_txn_id)
-
-    cond do
-      candidate_term > my_term -> true
-      candidate_term < my_term -> false
-      true -> TransactionID.index(candidate_txn_id) >= TransactionID.index(my_txn_id)
-    end
-  end
 end

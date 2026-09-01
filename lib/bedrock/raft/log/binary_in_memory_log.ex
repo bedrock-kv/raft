@@ -12,12 +12,14 @@ defmodule Bedrock.Raft.Log.BinaryInMemoryLog do
   @type t :: %__MODULE__{
           transactions: :ets.table(),
           last_commit: Raft.binary_transaction_id() | nil,
-          current_term: Raft.election_term()
+          current_term: Raft.election_term(),
+          voted_for: Raft.peer() | nil
         }
   defstruct ~w[
     transactions
     last_commit
     current_term
+    voted_for
   ]a
 
   @spec new() :: t()
@@ -66,8 +68,21 @@ defmodule Bedrock.Raft.Log.BinaryInMemoryLog do
 
     @impl true
     def purge_transactions_after(t, newest_txn_id) do
-      :ets.select_delete(t.transactions, match_gt_for_delete(newest_txn_id))
-      {:ok, %{t | last_commit: min(t.last_commit, newest_txn_id)}}
+      cond do
+        newest_txn_id < newest_safe_transaction_id(t) ->
+          {:error, :would_delete_committed_transactions}
+
+        # Nothing sorts after newest_txn_id, so there is nothing to delete.
+        # The select_delete below walks the entire table, and the follower
+        # purges before every append, so this no-op guard keeps the in-order
+        # append hot path free of full-table scans.
+        newest_txn_id >= newest_transaction_id(t) ->
+          {:ok, t}
+
+        true ->
+          :ets.select_delete(t.transactions, match_gt_for_delete(newest_txn_id))
+          {:ok, t}
+      end
     end
 
     @impl true
@@ -99,6 +114,14 @@ defmodule Bedrock.Raft.Log.BinaryInMemoryLog do
     def has_transaction_id?(t, transaction_id), do: :ets.member(t.transactions, transaction_id)
 
     @impl true
+    def previous_transaction_id(t, transaction_id) do
+      case :ets.prev(t.transactions, transaction_id) do
+        :"$end_of_table" -> initial_transaction_id(t)
+        previous_transaction_id -> previous_transaction_id
+      end
+    end
+
+    @impl true
     def transactions_to(t, :newest),
       do: transactions_from(t, initial_transaction_id(t), newest_transaction_id(t))
 
@@ -106,34 +129,56 @@ defmodule Bedrock.Raft.Log.BinaryInMemoryLog do
       do: transactions_from(t, initial_transaction_id(t), newest_safe_transaction_id(t))
 
     @impl true
-    def transactions_from(t, from, :newest),
-      do: transactions_from(t, from, newest_transaction_id(t))
+    def transactions_from(t, from, to), do: transactions_from(t, from, to, :infinity)
 
-    def transactions_from(t, from, :newest_safe),
-      do: transactions_from(t, from, newest_safe_transaction_id(t))
+    @impl true
+    def transactions_from(t, from, :newest, limit),
+      do: transactions_from(t, from, newest_transaction_id(t), limit)
 
-    def transactions_from(t, @initial_transaction_id, to),
-      do: :ets.select(t.transactions, match_lte(to))
+    def transactions_from(t, from, :newest_safe, limit),
+      do: transactions_from(t, from, newest_safe_transaction_id(t), limit)
 
-    def transactions_from(t, from, to) do
-      :ets.select(t.transactions, match_gte_lte(from, to))
-      |> case do
-        [{^from, _data} | transactions] -> transactions
-        [] -> []
+    # A bounded key walk over the ordered_set: O(result + log n), where the
+    # previous match-spec select traversed the entire table regardless of the
+    # requested range. `from` is exclusive. When `from` is not present in the
+    # log the walk returns the transactions that sort after it; the old
+    # select-based implementation raised a CaseClauseError in that situation.
+    def transactions_from(t, from, to, limit),
+      do: walk_forward(t.transactions, from, to, limit, [])
+
+    defp walk_forward(_table, _key, _to, 0, acc), do: Enum.reverse(acc)
+
+    defp walk_forward(table, key, to, limit, acc) do
+      case :ets.next(table, key) do
+        :"$end_of_table" ->
+          Enum.reverse(acc)
+
+        next_key when next_key > to ->
+          Enum.reverse(acc)
+
+        next_key ->
+          case :ets.lookup(table, next_key) do
+            [transaction] ->
+              walk_forward(table, next_key, to, decrement_limit(limit), [transaction | acc])
+
+            [] ->
+              # The key vanished between :ets.next and the lookup: the table
+              # owner truncated the log concurrently. Halt the walk. The old
+              # single-select read was one atomic, isolated BIF -- a
+              # point-in-time snapshot that could not be interrupted. The
+              # bounded walk traded that snapshot for O(result + log n)
+              # reads; this branch makes the resulting weak consistency
+              # non-crashing (see the consistency note on the Log protocol).
+              Enum.reverse(acc)
+          end
       end
     end
 
+    defp decrement_limit(:infinity), do: :infinity
+    defp decrement_limit(limit), do: limit - 1
+
     def match_gt_for_delete(gt),
       do: [{{:"$1", :"$2"}, [{:>, :"$1", {:const, gt}}], [true]}]
-
-    def match_lte(lte),
-      do: [{{:"$1", :"$2"}, [{:"=<", :"$1", {:const, lte}}], [{{:"$1", :"$2"}}]}]
-
-    def match_gte_lte(gte, lte),
-      do: [
-        {{:"$1", :"$2"}, [{:>=, :"$1", {:const, gte}}, {:"=<", :"$1", {:const, lte}}],
-         [{{:"$1", :"$2"}}]}
-      ]
 
     @doc """
     Ensure that the given transaction is in the correct format for the log,
@@ -151,6 +196,28 @@ defmodule Bedrock.Raft.Log.BinaryInMemoryLog do
     def current_term(t), do: t.current_term
 
     @impl true
-    def save_current_term(t, term), do: {:ok, %{t | current_term: term}}
+    def save_current_term(t, term) when term > t.current_term,
+      do: save_election_state(t, term, nil)
+
+    def save_current_term(t, _term), do: {:ok, t}
+
+    @impl true
+    def voted_for(t), do: t.voted_for
+
+    @impl true
+    def save_election_state(t, term, voted_for) when term > t.current_term,
+      do: {:ok, %{t | current_term: term, voted_for: voted_for}}
+
+    def save_election_state(%{voted_for: nil} = t, term, voted_for) when term == t.current_term,
+      do: {:ok, %{t | voted_for: voted_for}}
+
+    def save_election_state(%{voted_for: voted_for} = t, term, voted_for)
+        when term == t.current_term,
+        do: {:ok, t}
+
+    def save_election_state(t, term, _voted_for) when term == t.current_term,
+      do: {:error, :already_voted}
+
+    def save_election_state(_t, _term, _voted_for), do: {:error, :stale_term}
   end
 end

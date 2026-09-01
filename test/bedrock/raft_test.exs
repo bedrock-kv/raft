@@ -222,7 +222,7 @@ defmodule Bedrock.RaftTest do
 
       # Assuming that peer :c receives the ping and responds with a pong,
       # ensure that it is recorded properly.
-      p = Raft.handle_event(p, {:append_entries_ack, 1, {0, 0}}, :c)
+      p = Raft.handle_event(p, {:append_entries_ack, 1, true, {0, 0}, {0, 0}}, :c)
 
       verify!()
 
@@ -308,7 +308,11 @@ defmodule Bedrock.RaftTest do
       # and that it has been elected.
 
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
-      expect(MockInterface, :send_event, fn :c, {:append_entries_ack, 1, ^t0} -> :ok end)
+
+      expect(MockInterface, :send_event, fn :c, {:append_entries_ack, 1, true, ^t0, ^t0} ->
+        :ok
+      end)
+
       expect(MockInterface, :leadership_changed, fn {:c, 1} -> :ok end)
 
       p = Raft.handle_event(p, {:append_entries, 1, t0, [], t0}, :c)
@@ -360,12 +364,12 @@ defmodule Bedrock.RaftTest do
                quorum: 1
              } = p
 
-      # Timer elapses the second time with no votes, so we start another
-      # election for term 1
+      # Timer elapses the second time with no votes, so we start a new election
+      # in term 2 and persist a fresh self-vote.
 
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
-      expect(MockInterface, :send_event, fn :b, {:request_vote, 1, ^t0} -> :ok end)
-      expect(MockInterface, :send_event, fn :c, {:request_vote, 1, ^t0} -> :ok end)
+      expect(MockInterface, :send_event, fn :b, {:request_vote, 2, ^t0} -> :ok end)
+      expect(MockInterface, :send_event, fn :c, {:request_vote, 2, ^t0} -> :ok end)
 
       p = Raft.handle_event(p, :election, :timer)
 
@@ -374,14 +378,18 @@ defmodule Bedrock.RaftTest do
       assert %Raft{
                me: :a,
                mode: %Candidate{
-                 term: 1,
+                 term: 2,
                  quorum: 1,
                  peers: [:b, :c],
+                 voted_for: :a,
                  votes: []
                },
                peers: [:b, :c],
                quorum: 1
              } = p
+
+      assert Log.current_term(Raft.log(p)) == 2
+      assert Log.voted_for(Raft.log(p)) == :a
     end
 
     test "In a three peer cluster, as a candidate we receive a vote from a follower in an older term" do
@@ -432,7 +440,11 @@ defmodule Bedrock.RaftTest do
 
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
-      expect(MockInterface, :send_event, fn :c, {:append_entries_ack, 2, ^t0} -> :ok end)
+
+      expect(MockInterface, :send_event, fn :c, {:append_entries_ack, 2, true, ^t0, ^t0} ->
+        :ok
+      end)
+
       expect(MockInterface, :leadership_changed, fn {:c, 2} -> :ok end)
 
       p = p |> Raft.handle_event({:append_entries, 2, t0, [], t0}, :c)
@@ -484,8 +496,8 @@ defmodule Bedrock.RaftTest do
         |> Raft.handle_event(:election, :timer)
         |> Raft.handle_event({:vote, 1}, :c)
         |> Raft.handle_event({:vote, 1}, :b)
-        |> Raft.handle_event({:append_entries_ack, 1, t0}, :c)
-        |> Raft.handle_event({:append_entries_ack, 1, t0}, :b)
+        |> Raft.handle_event({:append_entries_ack, 1, true, t0, t0}, :c)
+        |> Raft.handle_event({:append_entries_ack, 1, true, t0, t0}, :b)
 
       verify!()
 
@@ -508,7 +520,11 @@ defmodule Bedrock.RaftTest do
 
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
-      expect(MockInterface, :send_event, fn :c, {:append_entries_ack, 2, ^t0} -> :ok end)
+
+      expect(MockInterface, :send_event, fn :c, {:append_entries_ack, 2, false, ^t1, {0, 0}} ->
+        :ok
+      end)
+
       expect(MockInterface, :leadership_changed, fn {:c, 2} -> :ok end)
 
       p = p |> Raft.handle_event({:append_entries, 2, t1, [{t1, :data1}], t1}, :c)
@@ -548,7 +564,11 @@ defmodule Bedrock.RaftTest do
 
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
-      expect(MockInterface, :send_event, fn :c, {:append_entries_ack, 2, ^t0} -> :ok end)
+
+      expect(MockInterface, :send_event, fn :c, {:append_entries_ack, 2, false, {1, 1}, {0, 0}} ->
+        :ok
+      end)
+
       expect(MockInterface, :leadership_changed, fn {:c, 2} -> :ok end)
 
       {:ok, p, t1} = Raft.next_transaction_id(p)
@@ -564,8 +584,12 @@ defmodule Bedrock.RaftTest do
 
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
       expect(MockInterface, :consensus_reached, fn _, ^t1, :behind -> :ok end)
-      expect(MockInterface, :send_event, fn :c, {:append_entries_ack, 2, ^t2} -> :ok end)
-      p = p |> Raft.handle_event({:append_entries, 2, t0, [{t0, :data1}, {t2, :data1}], t1}, :c)
+
+      expect(MockInterface, :send_event, fn :c, {:append_entries_ack, 2, true, ^t2, ^t2} ->
+        :ok
+      end)
+
+      p = p |> Raft.handle_event({:append_entries, 2, t0, [{t1, :data1}, {t2, :data2}], t1}, :c)
 
       verify!()
 
@@ -576,7 +600,11 @@ defmodule Bedrock.RaftTest do
 
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
       expect(MockInterface, :consensus_reached, fn _, ^t2, :latest -> :ok end)
-      expect(MockInterface, :send_event, fn :c, {:append_entries_ack, 2, ^t2} -> :ok end)
+
+      expect(MockInterface, :send_event, fn :c, {:append_entries_ack, 2, true, ^t2, ^t2} ->
+        :ok
+      end)
+
       p = p |> Raft.handle_event({:append_entries, 2, t2, [], t2}, :c)
 
       verify!()
@@ -724,8 +752,8 @@ defmodule Bedrock.RaftTest do
 
       p =
         p
-        |> Raft.handle_event({:append_entries_ack, 1, t0}, :b)
-        |> Raft.handle_event({:append_entries_ack, 1, t0}, :c)
+        |> Raft.handle_event({:append_entries_ack, 1, true, t0, t0}, :b)
+        |> Raft.handle_event({:append_entries_ack, 1, true, t0, t0}, :c)
 
       verify!()
       assert p |> Raft.am_i_the_leader?()
@@ -748,6 +776,8 @@ defmodule Bedrock.RaftTest do
       assert_receive ^t1
 
       # We add another transaction (t2) to our log, and send it to :b and :c.
+      # Replication is pipelined: the send cursor already advanced past t1, so
+      # this request carries only t2.
 
       expect(MockInterface, :send_event, fn :b, {:append_entries, 1, ^t1, [{t2, :data2}], ^t0} ->
         send(self(), t2)
@@ -765,7 +795,9 @@ defmodule Bedrock.RaftTest do
       assert_receive ^t2
 
       # Our heartbeat timer expires, and we send out a heartbeat to :b and :c.
-      # We note that the newest committed transaction is still t0
+      # We note that the newest committed transaction is still t0. Everything
+      # through t2 is already in flight, so the heartbeat is an empty probe
+      # from the send cursor.
 
       # Bounce the clock ahead 51ms
       advance_time.(51)
@@ -791,13 +823,14 @@ defmodule Bedrock.RaftTest do
       # we make a note of that. since we *also* have a copy of t2, two peers
       # constitutes a quorum and we can decide that consensus has been reached
       # up to t2. we then send out a new heartbeat to both :b and :c to let them
-      # know that consensus has been reached up to t2.
+      # know that consensus has been reached up to t2. both cursors have
+      # already advanced past t2, so these are empty commit notifications.
 
       expect(MockInterface, :consensus_reached, fn _, ^t2, :latest -> :ok end)
       expect(MockInterface, :send_event, fn :b, {:append_entries, 1, ^t2, [], ^t2} -> :ok end)
       expect(MockInterface, :send_event, fn :c, {:append_entries, 1, ^t2, [], ^t2} -> :ok end)
 
-      p = p |> Raft.handle_event({:append_entries_ack, 1, t2}, :b)
+      p = p |> Raft.handle_event({:append_entries_ack, 1, true, t2, t2}, :b)
 
       verify!()
       assert t2 == p |> Raft.log() |> Log.newest_transaction_id()
@@ -806,7 +839,7 @@ defmodule Bedrock.RaftTest do
       # :c now acknowledges the heartbeat saying that it has received up to t2
       # as well, and we make a note of that.
 
-      p = p |> Raft.handle_event({:append_entries_ack, 1, t2}, :c)
+      p = p |> Raft.handle_event({:append_entries_ack, 1, true, t2, t2}, :c)
 
       verify!()
       assert t2 == p |> Raft.log() |> Log.newest_transaction_id()
@@ -831,7 +864,11 @@ defmodule Bedrock.RaftTest do
       # with the latest transaction we have.
 
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
-      expect(MockInterface, :send_event, fn :c, {:append_entries_ack, 2, ^t0} -> :ok end)
+
+      expect(MockInterface, :send_event, fn :c, {:append_entries_ack, 2, false, ^t1, {0, 0}} ->
+        :ok
+      end)
+
       expect(MockInterface, :leadership_changed, fn {:c, 2} -> :ok end)
 
       p = p |> Raft.handle_event({:append_entries, 2, t1, [{t2, :data1}], t1}, :c)
@@ -841,7 +878,11 @@ defmodule Bedrock.RaftTest do
       # the leader responds with a new set of transactions, beginning where we
       # left off, and we append them to our log. we also acknowledge the leader.
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
-      expect(MockInterface, :send_event, fn :c, {:append_entries_ack, 2, ^t2} -> :ok end)
+
+      expect(MockInterface, :send_event, fn :c, {:append_entries_ack, 2, true, ^t2, ^t2} ->
+        :ok
+      end)
+
       expect(MockInterface, :consensus_reached, fn _, ^t2, :latest -> :ok end)
 
       p = p |> Raft.handle_event({:append_entries, 2, t0, [{t1, :data1}, {t2, :data2}], t2}, :c)
@@ -1000,7 +1041,7 @@ defmodule Bedrock.RaftTest do
       assert {:error, :not_leader} = Raft.next_transaction_id(p)
     end
 
-    test "candidate votes for higher term request" do
+    test "candidate becomes a follower and votes for a higher-term requester" do
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
       expect(MockInterface, :send_event, 2, fn _, _ -> :ok end)
@@ -1010,10 +1051,13 @@ defmodule Bedrock.RaftTest do
         |> Raft.handle_event(:election, :timer)
 
       expect(MockInterface, :send_event, fn :peer_d, {:vote, 2} -> :ok end)
+      expect(MockInterface, :timer, 2, fn :election -> &mock_timer_cancel/0 end)
 
       p = Raft.handle_event(candidate, {:request_vote, 2, {1, 1}}, :peer_d)
 
-      assert %Raft{mode: %Candidate{term: 2, voted_for: :peer_d}} = p
+      assert %Raft{mode: %Follower{term: 2, voted_for: :peer_d}} = p
+      assert Log.current_term(Raft.log(p)) == 2
+      assert Log.voted_for(Raft.log(p)) == :peer_d
     end
 
     test "candidate becomes follower on higher term vote" do
@@ -1036,8 +1080,9 @@ defmodule Bedrock.RaftTest do
       assert Log.current_term(log) == 2
     end
 
-    test "leader becomes follower on higher term ack" do
+    test "higher-term ack steps down without identifying its sender as leader" do
       log = InMemoryLog.new()
+      initial_transaction_id = Log.initial_transaction_id(log)
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
       expect(MockInterface, :send_event, 2, fn _, _ -> :ok end)
@@ -1052,11 +1097,28 @@ defmodule Bedrock.RaftTest do
         |> Raft.handle_event({:vote, 1}, :c)
 
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
-      expect(MockInterface, :leadership_changed, fn {:peer_d, 2} -> :ok end)
+      expect(MockInterface, :leadership_changed, fn {:undecided, 2} -> :ok end)
 
-      p = Raft.handle_event(leader, {:append_entries_ack, 2, {1, 1}}, :peer_d)
+      p = Raft.handle_event(leader, {:append_entries_ack, 2, true, {1, 1}, {1, 1}}, :peer_d)
 
-      assert %Raft{mode: %Follower{term: 2, leader: :peer_d}} = p
+      assert %Raft{mode: %Follower{term: 2, leader: :undecided}} = p
+      expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
+      expect(MockInterface, :leadership_changed, fn {:actual_leader, 2} -> :ok end)
+
+      expect(MockInterface, :send_event, fn :actual_leader,
+                                            {:append_entries_ack, 2, true,
+                                             ^initial_transaction_id, ^initial_transaction_id} ->
+        :ok
+      end)
+
+      p =
+        Raft.handle_event(
+          p,
+          {:append_entries, 2, initial_transaction_id, [], initial_transaction_id},
+          :actual_leader
+        )
+
+      assert %Raft{mode: %Follower{term: 2, leader: :actual_leader}} = p
     end
 
     test "unknown events are ignored" do
@@ -1068,6 +1130,78 @@ defmodule Bedrock.RaftTest do
       result = Raft.handle_event(p, :unknown_event, :peer_x)
 
       assert result == p
+    end
+  end
+
+  describe "append_entries_batch_size option" do
+    test "invalid values raise ArgumentError" do
+      for bad <- [0, -1, :lots, "10"] do
+        assert_raise ArgumentError, ~r/append_entries_batch_size/, fn ->
+          Raft.new(:a, [:b], InMemoryLog.new(), MockInterface, append_entries_batch_size: bad)
+        end
+      end
+    end
+
+    test "the default remains 10 when the option is omitted" do
+      log = InMemoryLog.new()
+      t0 = Log.initial_transaction_id(log)
+
+      expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
+      expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
+      expect(MockInterface, :send_event, fn :b, {:request_vote, 1, ^t0} -> :ok end)
+      expect(MockInterface, :timer, fn :heartbeat -> &mock_timer_cancel/0 end)
+      expect(MockInterface, :leadership_changed, fn {:a, 1} -> :ok end)
+
+      p =
+        Raft.new(:a, [:b], log, MockInterface)
+        |> Raft.handle_event(:election, :timer)
+        |> Raft.handle_event({:vote, 1}, :b)
+
+      assert Raft.am_i_the_leader?(p)
+      assert p.mode.append_entries_batch_size == 10
+    end
+
+    test "the configured size survives step-down and re-election" do
+      log = InMemoryLog.new()
+      t0 = Log.initial_transaction_id(log)
+
+      expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
+      expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
+      expect(MockInterface, :send_event, fn :b, {:request_vote, 1, ^t0} -> :ok end)
+      expect(MockInterface, :send_event, fn :c, {:request_vote, 1, ^t0} -> :ok end)
+      expect(MockInterface, :timer, fn :heartbeat -> &mock_timer_cancel/0 end)
+      expect(MockInterface, :leadership_changed, fn {:a, 1} -> :ok end)
+
+      p =
+        Raft.new(:a, [:b, :c], log, MockInterface, append_entries_batch_size: 3)
+        |> Raft.handle_event(:election, :timer)
+        |> Raft.handle_event({:vote, 1}, :b)
+
+      assert Raft.am_i_the_leader?(p)
+      assert p.mode.append_entries_batch_size == 3
+
+      # A higher-term ack forces a step-down to follower...
+      expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
+      expect(MockInterface, :leadership_changed, fn {:undecided, 2} -> :ok end)
+
+      p = p |> Raft.handle_event({:append_entries_ack, 2, true, t0, t0}, :b)
+
+      refute Raft.am_i_the_leader?(p)
+
+      # ...and a later re-election in term 3 keeps the configured batch size.
+      expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
+      expect(MockInterface, :send_event, fn :b, {:request_vote, 3, ^t0} -> :ok end)
+      expect(MockInterface, :send_event, fn :c, {:request_vote, 3, ^t0} -> :ok end)
+      expect(MockInterface, :timer, fn :heartbeat -> &mock_timer_cancel/0 end)
+      expect(MockInterface, :leadership_changed, fn {:a, 3} -> :ok end)
+
+      p =
+        p
+        |> Raft.handle_event(:election, :timer)
+        |> Raft.handle_event({:vote, 3}, :b)
+
+      assert Raft.am_i_the_leader?(p)
+      assert p.mode.append_entries_batch_size == 3
     end
   end
 end
