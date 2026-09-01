@@ -105,6 +105,19 @@ defmodule Bedrock.Raft.Mode.Leader do
   def default_append_entries_batch_size, do: @default_append_entries_batch_size
 
   @doc """
+  Validate an `:append_entries_batch_size` value, raising `ArgumentError`
+  unless it is a positive integer. Shared by `Bedrock.Raft.new/5` and
+  `new/6` so the two construction paths cannot drift.
+  """
+  @spec validate_append_entries_batch_size!(term()) :: pos_integer()
+  def validate_append_entries_batch_size!(n) when is_integer(n) and n > 0, do: n
+
+  def validate_append_entries_batch_size!(other) do
+    raise ArgumentError,
+          ":append_entries_batch_size must be a positive integer, got: #{inspect(other)}"
+  end
+
+  @doc """
   Create a new leader. We'll send notices to all the peers, and schedule the
   timer to tick.
 
@@ -112,10 +125,8 @@ defmodule Bedrock.Raft.Mode.Leader do
 
     * `:append_entries_batch_size` - the maximum number of transactions
       carried by a single AppendEntries request (default
-      `#{@default_append_entries_batch_size}`). Larger batches amortize
-      round trips while a follower is catching up, at the cost of larger
-      messages; the batch size also bounds the work a single request imposes
-      on both the leader (log read) and the follower (append/reconcile).
+      `#{@default_append_entries_batch_size}`); must be a positive integer.
+      See `Bedrock.Raft.new/5` for the full tradeoff discussion.
   """
   @spec new(
           Raft.election_term(),
@@ -127,6 +138,12 @@ defmodule Bedrock.Raft.Mode.Leader do
         ) ::
           t()
   def new(term, quorum, peers, log, interface, opts \\ []) do
+    # Validate before doing anything with side effects (timers, ETS).
+    append_entries_batch_size =
+      opts
+      |> Keyword.get(:append_entries_batch_size, @default_append_entries_batch_size)
+      |> validate_append_entries_batch_size!()
+
     # Initialize id_sequence to the index of the newest transaction in the log
     # so we don't generate conflicting transaction IDs
     newest_transaction_id = Log.newest_transaction_id(log)
@@ -145,8 +162,7 @@ defmodule Bedrock.Raft.Mode.Leader do
         ),
       log: log,
       interface: interface,
-      append_entries_batch_size:
-        Keyword.get(opts, :append_entries_batch_size, @default_append_entries_batch_size)
+      append_entries_batch_size: append_entries_batch_size
     }
     |> set_timer()
   end

@@ -91,7 +91,7 @@ defmodule Bedrock.Raft do
       append_entries_batch_size:
         opts
         |> Keyword.get(:append_entries_batch_size, Leader.default_append_entries_batch_size())
-        |> validate_append_entries_batch_size!()
+        |> Leader.validate_append_entries_batch_size!()
     }
     |> then(fn t ->
       # All nodes start as followers and must go through election process
@@ -376,14 +376,6 @@ defmodule Bedrock.Raft do
   defp cancel_mode_timer(%{mode: mode} = t) do
     mode.cancel_timer_fn.()
     %{t | mode: %{mode | cancel_timer_fn: nil}}
-  end
-
-  @spec validate_append_entries_batch_size!(term()) :: pos_integer()
-  defp validate_append_entries_batch_size!(n) when is_integer(n) and n > 0, do: n
-
-  defp validate_append_entries_batch_size!(other) do
-    raise ArgumentError,
-          ":append_entries_batch_size must be a positive integer, got: #{inspect(other)}"
   end
 
   @spec next_term(t()) :: Raft.election_term()

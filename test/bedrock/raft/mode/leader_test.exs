@@ -891,6 +891,16 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
       assert Leader.default_append_entries_batch_size() == 10
     end
 
+    test "Leader.new/6 validates the batch size directly" do
+      for bad <- [0, -1, :lots, "10"] do
+        assert_raise ArgumentError, ~r/append_entries_batch_size/, fn ->
+          Leader.new(2, 1, [:peer_1], InMemoryLog.new(), MockInterface,
+            append_entries_batch_size: bad
+          )
+        end
+      end
+    end
+
     test "a custom batch size bounds catch-up batches and continues on success" do
       log = InMemoryLog.new()
       t0 = Log.initial_transaction_id(log)
