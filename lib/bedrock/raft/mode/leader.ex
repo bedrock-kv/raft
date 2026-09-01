@@ -287,8 +287,17 @@ defmodule Bedrock.Raft.Mode.Leader do
         t
 
       true ->
+        # Clamp to matchIndex: a delayed rejection can carry a stale hint from
+        # before the follower caught up, and without the clamp it would drag
+        # the cursor below confirmed replication and replay the whole prefix.
+        # This clamp is what enforces cursor >= matchIndex for hint jumps
+        # (one-step backtracking preserves it inherently), and probing from a
+        # matched entry always passes the follower's consistency check.
         retry_transaction_id =
-          retry_transaction_id(t, rejected_prev_transaction_id, follower_newest_transaction_id)
+          max(
+            follower_match_transaction_id,
+            retry_transaction_id(t, rejected_prev_transaction_id, follower_newest_transaction_id)
+          )
 
         FollowerTracking.record_rejection(t.follower_tracking, follower, retry_transaction_id)
 

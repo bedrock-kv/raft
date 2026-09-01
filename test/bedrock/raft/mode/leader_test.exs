@@ -837,5 +837,46 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
       assert FollowerTracking.send_cursor_transaction_id(leader.follower_tracking, :peer_1) ==
                {2, 3}
     end
+
+    test "a delayed rejection cannot drag the cursor below matchIndex" do
+      t0 = {0, 0}
+      transactions = for index <- 1..50, do: {{2, index}, index}
+      retry_batch = Enum.slice(transactions, 30, 10)
+
+      {:ok, log} = InMemoryLog.new() |> Log.append_transactions(t0, transactions)
+
+      expect(MockInterface, :timestamp_in_ms, 3, fn -> 1000 end)
+      expect(MockInterface, :timer, fn :heartbeat -> &mock_cancel/0 end)
+      leader = Leader.new(2, 1, [:peer_1], log, MockInterface)
+
+      # The follower has confirmed replication through {2, 30}.
+      expect(MockInterface, :consensus_reached, fn _, {2, 30}, :behind -> :ok end)
+
+      expect(MockInterface, :send_event, fn :peer_1, {:append_entries, 2, {2, 50}, [], {2, 30}} ->
+        :ok
+      end)
+
+      {:ok, leader} =
+        Leader.append_entries_ack_received(leader, 2, true, {2, 30}, {2, 30}, :peer_1)
+
+      assert FollowerTracking.match_transaction_id(leader.follower_tracking, :peer_1) == {2, 30}
+
+      # A delayed rejection from when the follower was still empty arrives:
+      # prev {2, 40} is above matchIndex, but the stale hint {0, 0} is far
+      # below it. The retry probe must clamp to the confirmed match position
+      # instead of replaying the whole prefix.
+      expect(MockInterface, :send_event, fn :peer_1,
+                                            {:append_entries, 2, {2, 30}, ^retry_batch, {2, 30}} ->
+        :ok
+      end)
+
+      {:ok, leader} =
+        Leader.append_entries_ack_received(leader, 2, false, {2, 40}, t0, :peer_1)
+
+      assert FollowerTracking.send_cursor_transaction_id(leader.follower_tracking, :peer_1) >=
+               {2, 30}
+
+      assert FollowerTracking.match_transaction_id(leader.follower_tracking, :peer_1) == {2, 30}
+    end
   end
 end
