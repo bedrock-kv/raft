@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.10.0] - 2026-09-02
 
 ### Added
 - Development benchmarks under `bench/`: an in-process three-node cluster
@@ -43,6 +43,12 @@
   paths now fetch bounded batches: the leader reads exactly one batch per
   AppendEntries request and the follower reads no more existing entries than
   the request carries.
+- `Bedrock.Raft.Log.purge_transactions_after/2` may now return
+  `{:error, :would_delete_committed_transactions}`: a purge that would remove
+  committed transactions is rejected, since Raft's commit index must never
+  decrease. Implementations should no longer lower their newest-safe
+  transaction id when purging. The bundled in-memory logs implement the new
+  contract.
 
 ### Fixed
 - Log range reads in the bundled in-memory logs are now bounded key walks over
@@ -75,6 +81,15 @@
   comes exclusively from successful responses, rejections still backtrack the
   cursor, and a lost request is recovered via heartbeat probe, rejection, and
   backtrack.
+- Duplicate or overlapping AppendEntries requests no longer truncate a
+  follower's matching log suffix. The follower now compares incoming entries
+  against its log by index and term and truncates only from the first actual
+  conflict (Raft §5.3), so a stale retransmission carrying a prefix of the log
+  leaves it unchanged. Previously such a request could delete uncommitted
+  entries the follower had already acknowledged.
+- The leader now advances the commit index from quorum replication only when
+  the candidate entry belongs to its current term (Raft §5.4.2). Older-term
+  entries are still committed indirectly once a current-term entry replicates.
 - Higher-term transitions now cancel the outgoing candidate or leader timer,
   preventing an obsolete election timeout from disrupting the new leader.
 - Leadership notifications now report a new term even when the identified

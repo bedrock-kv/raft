@@ -10,7 +10,7 @@ An implementation of the RAFT consensus algorithm in Elixir that doesn't force a
 ```elixir
 def deps do
   [
-    {:bedrock_raft, "~> 0.9"}
+    {:bedrock_raft, "~> 0.10"}
   ]
 end
 ```

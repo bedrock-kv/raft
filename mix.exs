@@ -4,7 +4,7 @@ defmodule BedrockRaft.MixProject do
   def project do
     [
       app: :bedrock_raft,
-      version: "0.9.8",
+      version: "0.10.0",
       elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
