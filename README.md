@@ -166,7 +166,7 @@ true = Raft.am_i_the_leader?(raft)
 
 # Only a leader accepts entries. Add one; on a single node it commits at once,
 # and `consensus_reached/3` fires.
-{:ok, raft, _txn_id} = Raft.add_transaction(raft, %{set: {"key", "value"}})
+{:ok, _raft, _txn_id} = Raft.add_transaction(raft, %{set: {"key", "value"}})
 ```
 
 Running it prints the leadership change, then the commit.
@@ -206,7 +206,7 @@ every line.
   real state machines and counts every message and entry on the wire, used to
   check replication behaviour and catch regressions in message volume.
 
-Line coverage sits near 100%, but treat that as a floor rather than the
+Line coverage sits above 90%, but treat that as a floor rather than the
 headline: the behavioural and simulation tests above are what give confidence
 that the protocol is correct, not the percentage.
 
