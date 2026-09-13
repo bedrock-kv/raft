@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1] - 2026-09-13
+
+### Changed
+- Rewrote the README with a practical introduction to Raft, a runnable
+  single-node example, clearer integration guidance for the `Interface` and
+  `Log` behaviours, and expanded testing and documentation guidance.
+
 ## [0.10.0] - 2026-09-02
 
 ### Added
