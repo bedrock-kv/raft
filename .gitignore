@@ -39,4 +39,4 @@ bedrock-raft*.tar
 
 # Agent cruft is local-only (mirrors ../bedrock)
 .claude/*
-.agent/*
+.agents/*
