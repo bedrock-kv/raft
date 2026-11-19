@@ -167,6 +167,14 @@ defmodule Bedrock.Raft.Mode.Leader do
     |> set_timer()
   end
 
+  @doc """
+  Send an AppendEntries to every follower. `Bedrock.Raft` calls this when a
+  peer becomes leader, so that the followers learn of the leader before the
+  first heartbeat tick.
+  """
+  @spec announce(t()) :: t()
+  def announce(t), do: send_append_entries_to_followers(t, t.peers)
+
   @spec next_id(t()) :: {:ok, t(), Raft.transaction_id()}
   def next_id(t) do
     next_id = t.id_sequence + 1
@@ -434,10 +442,11 @@ defmodule Bedrock.Raft.Mode.Leader do
   def timer_ticked(t, _), do: {:ok, t}
 
   defp send_heartbeats_and_continue(t) do
+    # Every follower receives an AppendEntries on every heartbeat tick, so the
+    # interval between two messages to a follower is at most one heartbeat
+    # interval.
     t
-    |> send_append_entries_to_followers(
-      FollowerTracking.followers_not_seen_in(t.follower_tracking, t.interface.heartbeat_ms())
-    )
+    |> send_append_entries_to_followers(t.peers)
     |> reset_timer()
     |> then(&{:ok, &1})
   end

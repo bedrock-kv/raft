@@ -182,6 +182,9 @@ defmodule Bedrock.RaftTest do
       # become leader.
       expect(MockInterface, :timer, fn :heartbeat -> &mock_timer_cancel/0 end)
       expect(MockInterface, :leadership_changed, fn {:a, 1} -> :ok end)
+      # The new leader announces itself to every follower.
+      expect(MockInterface, :send_event, fn :b, {:append_entries, 1, _, [], _} -> :ok end)
+      expect(MockInterface, :send_event, fn :c, {:append_entries, 1, _, [], _} -> :ok end)
 
       p = Raft.handle_event(p, {:vote, 1}, :b)
 
@@ -490,6 +493,9 @@ defmodule Bedrock.RaftTest do
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
       expect(MockInterface, :timer, fn :heartbeat -> &mock_timer_cancel/0 end)
       expect(MockInterface, :leadership_changed, fn {:a, 1} -> :ok end)
+      # The new leader announces itself to every follower.
+      expect(MockInterface, :send_event, fn :b, {:append_entries, 1, _, [], _} -> :ok end)
+      expect(MockInterface, :send_event, fn :c, {:append_entries, 1, _, [], _} -> :ok end)
 
       p =
         Raft.new(:a, [:b, :c], InMemoryLog.new(), MockInterface)
@@ -545,6 +551,9 @@ defmodule Bedrock.RaftTest do
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
       expect(MockInterface, :timer, fn :heartbeat -> &mock_timer_cancel/0 end)
       expect(MockInterface, :leadership_changed, fn {:a, 1} -> :ok end)
+      # The new leader announces itself to every follower.
+      expect(MockInterface, :send_event, fn :b, {:append_entries, 1, _, [], _} -> :ok end)
+      expect(MockInterface, :send_event, fn :c, {:append_entries, 1, _, [], _} -> :ok end)
 
       p =
         Raft.new(:a, [:b, :c], log, MockInterface)
@@ -626,6 +635,9 @@ defmodule Bedrock.RaftTest do
       expect(MockInterface, :timer, fn :election -> &mock_timer_cancel/0 end)
       expect(MockInterface, :timer, fn :heartbeat -> &mock_timer_cancel/0 end)
       expect(MockInterface, :leadership_changed, fn {:a, 1} -> :ok end)
+      # The new leader announces itself to every follower.
+      expect(MockInterface, :send_event, fn :b, {:append_entries, 1, _, [], _} -> :ok end)
+      expect(MockInterface, :send_event, fn :c, {:append_entries, 1, _, [], _} -> :ok end)
 
       p =
         Raft.new(:a, [:b, :c], log, MockInterface)
@@ -727,6 +739,9 @@ defmodule Bedrock.RaftTest do
 
       expect(MockInterface, :timer, fn :heartbeat -> &mock_timer_cancel/0 end)
       expect(MockInterface, :leadership_changed, fn {:a, 1} -> :ok end)
+      # The new leader announces itself to every follower.
+      expect(MockInterface, :send_event, fn :b, {:append_entries, 1, _, [], _} -> :ok end)
+      expect(MockInterface, :send_event, fn :c, {:append_entries, 1, _, [], _} -> :ok end)
 
       p =
         p
@@ -1089,6 +1104,9 @@ defmodule Bedrock.RaftTest do
 
       expect(MockInterface, :timer, fn :heartbeat -> &mock_timer_cancel/0 end)
       expect(MockInterface, :leadership_changed, fn {:a, 1} -> :ok end)
+      # The new leader announces itself to every follower.
+      expect(MockInterface, :send_event, fn :b, {:append_entries, 1, _, [], _} -> :ok end)
+      expect(MockInterface, :send_event, fn :c, {:append_entries, 1, _, [], _} -> :ok end)
 
       leader =
         Raft.new(:a, [:b, :c], log, MockInterface)
@@ -1151,6 +1169,8 @@ defmodule Bedrock.RaftTest do
       expect(MockInterface, :send_event, fn :b, {:request_vote, 1, ^t0} -> :ok end)
       expect(MockInterface, :timer, fn :heartbeat -> &mock_timer_cancel/0 end)
       expect(MockInterface, :leadership_changed, fn {:a, 1} -> :ok end)
+      # The new leader announces itself to every follower.
+      expect(MockInterface, :send_event, fn :b, {:append_entries, 1, _, [], _} -> :ok end)
 
       p =
         Raft.new(:a, [:b], log, MockInterface)
@@ -1171,6 +1191,9 @@ defmodule Bedrock.RaftTest do
       expect(MockInterface, :send_event, fn :c, {:request_vote, 1, ^t0} -> :ok end)
       expect(MockInterface, :timer, fn :heartbeat -> &mock_timer_cancel/0 end)
       expect(MockInterface, :leadership_changed, fn {:a, 1} -> :ok end)
+      # The new leader announces itself to every follower.
+      expect(MockInterface, :send_event, fn :b, {:append_entries, 1, _, [], _} -> :ok end)
+      expect(MockInterface, :send_event, fn :c, {:append_entries, 1, _, [], _} -> :ok end)
 
       p =
         Raft.new(:a, [:b, :c], log, MockInterface, append_entries_batch_size: 3)
@@ -1194,6 +1217,9 @@ defmodule Bedrock.RaftTest do
       expect(MockInterface, :send_event, fn :c, {:request_vote, 3, ^t0} -> :ok end)
       expect(MockInterface, :timer, fn :heartbeat -> &mock_timer_cancel/0 end)
       expect(MockInterface, :leadership_changed, fn {:a, 3} -> :ok end)
+      # The new leader announces itself to every follower.
+      expect(MockInterface, :send_event, fn :b, {:append_entries, 3, _, [], _} -> :ok end)
+      expect(MockInterface, :send_event, fn :c, {:append_entries, 3, _, [], _} -> :ok end)
 
       p =
         p

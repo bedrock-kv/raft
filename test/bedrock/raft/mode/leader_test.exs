@@ -50,13 +50,12 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
       expect(MockInterface, :timer, fn :heartbeat -> &mock_cancel/0 end)
       leader = Leader.new(term, quorum, peers, log, MockInterface)
 
-      # During timer tick, use a later timestamp to make followers appear "not seen recently"
-      # Called twice: once in active_followers, once in send_heartbeats_and_continue
-      expect(MockInterface, :timestamp_in_ms, 2, fn -> 1200 end)
-      # followers not seen in 100ms - called twice (active_followers + send_heartbeats)
-      expect(MockInterface, :heartbeat_ms, 2, fn -> 100 end)
+      # During the timer tick, active_followers reads the clock and the
+      # heartbeat interval once each.
+      expect(MockInterface, :timestamp_in_ms, fn -> 1200 end)
+      expect(MockInterface, :heartbeat_ms, fn -> 100 end)
 
-      # Now followers should be considered "not seen recently" and get heartbeats
+      # Every follower gets a heartbeat
       expect(MockInterface, :send_event, fn :peer_1, {:append_entries, 2, {0, 0}, [], {0, 0}} ->
         :ok
       end)
@@ -73,7 +72,7 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
       assert leader.term == term
     end
 
-    test "sends heartbeats to followers not recently seen" do
+    test "sends heartbeats to every follower, including followers seen recently" do
       term = 2
       quorum = 1
       peers = [:peer_1, :peer_2]
@@ -85,13 +84,13 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
       expect(MockInterface, :timer, fn :heartbeat -> &mock_cancel/0 end)
       leader = Leader.new(term, quorum, peers, log, MockInterface)
 
-      # During timer tick, use a later timestamp
-      # Called twice: once in active_followers, once in send_heartbeats_and_continue
-      expect(MockInterface, :timestamp_in_ms, 2, fn -> 1200 end)
-      # check for followers not seen in 100ms - called twice
-      expect(MockInterface, :heartbeat_ms, 2, fn -> 100 end)
+      # The tick comes 50 ms after the followers were last seen, which is less
+      # than the 100 ms heartbeat interval. active_followers reads the clock
+      # and the heartbeat interval once each.
+      expect(MockInterface, :timestamp_in_ms, fn -> 1050 end)
+      expect(MockInterface, :heartbeat_ms, fn -> 100 end)
 
-      # Followers should be considered "not seen recently" and get heartbeats
+      # Both followers get a heartbeat
       expect(MockInterface, :send_event, fn :peer_1, {:append_entries, 2, {0, 0}, [], {0, 0}} ->
         :ok
       end)
@@ -145,11 +144,10 @@ defmodule Bedrock.Raft.Mode.LeaderTest do
       expect(MockInterface, :timer, fn :heartbeat -> &mock_cancel/0 end)
       leader = Leader.new(term, quorum, peers, log, MockInterface)
 
-      # During timer tick, use a later timestamp
-      # called twice in send_heartbeats_and_continue
-      expect(MockInterface, :timestamp_in_ms, 2, fn -> 2000 end)
-      # called twice
-      expect(MockInterface, :heartbeat_ms, 2, fn -> 50 end)
+      # During the timer tick, active_followers reads the clock and the
+      # heartbeat interval once each.
+      expect(MockInterface, :timestamp_in_ms, fn -> 2000 end)
+      expect(MockInterface, :heartbeat_ms, fn -> 50 end)
 
       # Configure interface to continue despite quorum loss
       expect(MockInterface, :quorum_lost, fn 0, 2, 2 -> :continue end)

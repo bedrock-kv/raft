@@ -127,10 +127,10 @@ defmodule Bedrock.Raft.Mode.Leader.FollowerTracking do
 
   The cursor only moves forwards here, so a send that races a concurrent
   rejection cannot undo a backtrack that has already been recorded. The
-  last-seen timestamp is deliberately left untouched: it means "last heard
-  FROM the follower" and gates heartbeat retransmission through
-  `followers_not_seen_in/2`. Updating it on send would suppress heartbeats to
-  an unresponsive follower and stall loss recovery.
+  last-seen timestamp is not changed. It is the time of the last response
+  from the follower, and the leader counts active followers with
+  `followers_not_seen_in/2`. Updating it on send would count an unresponsive
+  follower as active.
   """
   @spec advance_send_cursor(t(), Raft.peer(), Raft.transaction_id()) :: t()
   def advance_send_cursor(t, follower, transaction_id) do
