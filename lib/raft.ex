@@ -369,6 +369,7 @@ defmodule Bedrock.Raft do
           )
     }
     |> notify_change_in_leadership(leadership(t))
+    |> then(&%{&1 | mode: Leader.announce(&1.mode)})
   end
 
   defp cancel_mode_timer(%{mode: %{cancel_timer_fn: nil}} = t), do: t

@@ -77,7 +77,7 @@ defmodule Bedrock.Raft.Mode.Leader.FollowerTrackingTest do
     assert [{:f1, 4, 0, 1000}] = :ets.lookup(t.table, :f1)
   end
 
-  test "advance_send_cursor/3 leaves the follower eligible for heartbeat probes", %{t: t} do
+  test "advance_send_cursor/3 leaves an unresponsive follower in the not-seen set", %{t: t} do
     FollowerTracking.advance_send_cursor(t, :f1, 9)
 
     expect(MockTimer, :timestamp, fn -> 1100 end)
